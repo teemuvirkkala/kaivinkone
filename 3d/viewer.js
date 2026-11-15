@@ -6,6 +6,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { LDrawLoader } from 'three/addons/loaders/LDrawLoader.js';
 import { LDrawConditionalLineMaterial } from 'three/addons/materials/LDrawConditionalLineMaterial.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { lockState } from '../lock.js';
 
 const FOV_DEG = 22;          // the booklet's camera (tools/instr.py camera_for)
 const MARGIN = 1.10;         // instr.camera_for's room round the model
@@ -267,8 +268,13 @@ function fail(err) {
 }
 
 async function start() {
+  if (!(await lockState()).open) {
+    location.replace(`../${location.search}`);
+    return;
+  }
   const sets = await fetch('sets.json').then(r => r.json());
   for (const { number, label } of sets) $('set').add(new Option(label, number));
+  $('set').hidden = sets.length < 2;
   const asked = location.hash.slice(1).split('/')[0];
   const first = sets.some(s => s.number === asked) ? asked : sets[0].number;
   $('set').value = first;
