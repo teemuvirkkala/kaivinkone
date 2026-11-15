@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="fi"><head><meta charset="utf-8"><meta name="robots" content="noindex">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Kaivinkone 3D</title>
+<link rel="stylesheet" href="style.css">
+<script type="importmap">
+{"imports": {"three": "./vendor/three/build/three.module.min.js", "three/addons/": "./vendor/three/examples/jsm/"}}
+</script>
+</head>
+<body>
+<canvas id="view" aria-label="Kaivinkone 3D-mallina: vedä kääntääksesi, nipistä zoomataksesi"></canvas>
+
+<header>
+  <a class="back" href="../" aria-label="Takaisin ohjeisiin">‹ Ohjeet</a>
+  <select id="set" aria-label="Malli"></select>
+</header>
+
+<div id="chips" aria-live="polite">
+  <span id="build" class="chip build" hidden></span>
+  <span id="copies" class="chip copies" hidden></span>
+  <span id="turn" class="chip turn" hidden></span>
+</div>
+
+<div id="done" hidden>Valmis!</div>
+<div id="loading">Ladataan palikoita…</div>
+
+<footer>
+  <button id="prev" class="nav" aria-label="Edellinen vaihe">◀</button>
+  <div class="where">
+    <div class="step"><span id="num">1</span></div>
+    <div class="info">
+      <div id="page">sivu 2–3</div>
+      <div id="caption" lang="en"></div>
+      <div class="bar"><div id="progress"></div></div>
+    </div>
+  </div>
+  <button id="next" class="nav primary" aria-label="Seuraava vaihe">▶</button>
+</footer>
+
+<script type="module" src="viewer.js"></script>
+</body></html>
