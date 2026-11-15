@@ -274,6 +274,7 @@ async function start() {
   }
   const sets = await fetch('sets.json').then(r => r.json());
   for (const { number, label } of sets) $('set').add(new Option(label, number));
+  $('set').hidden = sets.length < 2;
   const asked = location.hash.slice(1).split('/')[0];
   const first = sets.some(s => s.number === asked) ? asked : sets[0].number;
   $('set').value = first;
