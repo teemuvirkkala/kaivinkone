@@ -20,6 +20,7 @@ const LINE_ORDER = 1;        // lines are drawn after the faces, which they lie 
 
 const faces = new Map();     // a loader's face material -> its booklet look
 const lines = new Map();     // a loader's edge material (and whether conditional) -> its LineMaterial
+const wides = new WeakMap(); // a part's line geometry, which its copies in every picture share -> its wide ones (#219)
 let widthPx = 1;             // the lines' width, device px
 const resolution = new THREE.Vector2(1, 1);   // the drawing buffer's size, px
 
@@ -146,10 +147,9 @@ function lineMaterial(m, isConditional) {
   return lines.get(key);
 }
 
-function wide(segments) {
-  // a LineSegments2 for each material group: LineSegmentsGeometry has one material
+function wideGeometries(segments) {
+  // a LineSegmentsGeometry for each material group of segments' geometry, as [geometry, its material index]
   const g = segments.geometry, pos = g.attributes.position.array;
-  const materials = [segments.material].flat();
   const groups = g.groups.length ? g.groups : [{ start: 0, count: g.attributes.position.count, materialIndex: 0 }];
   return groups.map(({ start, count, materialIndex }) => {
     const n = Math.min(count, g.attributes.position.count - start);
@@ -161,6 +161,15 @@ function wide(segments) {
         geometry.setAttribute(to, new THREE.InstancedBufferAttribute(one, 3));
       }
     }
+    return [geometry, materialIndex];
+  });
+}
+
+function wide(segments) {
+  // a LineSegments2 for each material group: LineSegmentsGeometry has one material
+  if (!wides.has(segments.geometry)) wides.set(segments.geometry, wideGeometries(segments));
+  const materials = [segments.material].flat();
+  return wides.get(segments.geometry).map(([geometry, materialIndex]) => {
     const line = new LineSegments2(geometry, lineMaterial(materials[materialIndex], !!segments.isConditionalLine));
     line.renderOrder = LINE_ORDER;
     return line;

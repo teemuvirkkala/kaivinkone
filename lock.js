@@ -17,10 +17,11 @@ function preview(params) {
   }
 }
 
-// {open, at, now()}: whether the site is open, when it opens and the time now, as the server keeps it
-export async function lockState() {
+// {open, at, now()}: whether the site is open, when it opens and the time now, as the server keeps it. asked: the
+// request for unlock.json, if the page has made it already
+export async function lockState(asked = fetch(new URL('unlock.json', import.meta.url), { cache: 'no-store' })) {
   const params = new URLSearchParams(location.search);
-  const response = await fetch(new URL('unlock.json', import.meta.url), { cache: 'no-store' });
+  const response = await asked;
   const at = new Date((await response.json()).at);
   const pretend = params.has('nyt') ? new Date(params.get('nyt')) : null;
   const server = Date.parse(response.headers.get('Date'));
