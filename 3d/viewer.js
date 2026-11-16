@@ -18,11 +18,14 @@ const DROP_MS = 650;
 const STAGGER_MS = 160;      // between the moves of one picture's units
 const CAMERA_MS = 800;
 const FADE_MS = 600;         // the new pieces' outline fades out this long once they are in place
+const IDLE_MS = 1000;        // the next picture is built when the page is idle, or after this long at most
 const FINALE_SPIN = 1.2;     // OrbitControls autoRotateSpeed on the finished model
 const FIT_MARGIN = 1.15;     // room round the pieces when they fill the screen (NUMBER.json's fit)
 const SHOT = new URLSearchParams(location.search).has('shot');
 
 const $ = id => document.getElementById(id);
+// Each phase's end as a performance mark, '3d:' and its name, which tools/time3d.cjs reads (#219)
+const mark = name => performance.mark(`3d:${name}`);
 const canvas = $('view');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, preserveDrawingBuffer: SHOT });
 renderer.setPixelRatio(SHOT ? 1 : Math.min(window.devicePixelRatio, 2));
@@ -30,7 +33,6 @@ renderer.toneMapping = THREE.NeutralToneMapping;
 if (SHOT) document.body.classList.add('shot');
 
 const scene = new THREE.Scene();
-scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
 scene.environmentIntensity = 0.9;
 const sun = new THREE.DirectionalLight(0xffffff, 1.4);
 sun.position.set(0.5, 1, 0.8);
@@ -60,6 +62,7 @@ let cameraTween = null;
 let loadId = 0;
 let shown = null;        // the picture's group on the screen
 let outlineFades = 0;    // when (performance.now()) its outline starts fading out
+let drawn = -1;          // a picture just put on the stage, marked once it is drawn
 
 function ease(t) {        // out-back: overshoots a little and settles, like a piece clicking on
   const c = 1.4;
@@ -99,6 +102,13 @@ function asFigure(pieces) {
   }
 }
 
+function lightFigure() {
+  // the room the figure's pieces reflect (the others are unlit: look.js), built when a picture first has them (#219)
+  if (scene.environment) return;
+  scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
+  mark('environment');
+}
+
 function picture(i) {
   if (!built.has(i)) {
     const pic = data.steps[i];
@@ -108,6 +118,7 @@ function picture(i) {
         return;
       }
       const figure = group.children.map((child, n) => [child, pic.parts[n]]).filter(([, [file]]) => data.figure.parts.includes(file));
+      if (figure.length) lightFigure();
       asFigure(figure.map(([child, [, colour]]) => [child, colour]));
       group.children.filter(child => !figure.some(([f]) => f === child)).forEach(asBooklet);
       group.children.forEach((child, n) => {
@@ -117,23 +128,28 @@ function picture(i) {
         child.userData.rest = lift ? child.position.clone().sub(new THREE.Vector3(...lift)) : child.position.clone();
       });
       prepare(group, pic.outlined);
+      mark(`built ${i + 1}`);
       resolve(group);
     }, reject)));
   }
   return built.get(i);
 }
 
-async function load(number) {
+// A set's NUMBER.json and NUMBER.mpd (files: index.html's setFiles()), shown once open (a promise) is true
+async function load(number, files = window.setFiles(number), open = Promise.resolve(true)) {
   const id = ++loadId;
   $('loading').classList.remove('gone');
+  const [json, text] = await Promise.all([files.json, files.mpd]);
+  mark('fetched');
+  if (id !== loadId || !(await open)) return;
   const fresh = new LDrawLoader();
   fresh.setConditionalLineMaterial(LDrawConditionalLineMaterial);
   fresh.smoothNormals = true;
-  const [json] = await Promise.all([
-    fetch(`${number}.json`).then(r => r.json()),
-    fresh.loadAsync(`${number}.mpd`),   // its files fill the loader's caches: every picture's parts are in it
-  ]);
-  if (id !== loadId) return;
+  fresh.setMaterials([]);
+  // The packed files go in the loader's parse cache (LDrawLoader r170's), read but not built: a picture builds the
+  // parts it uses, each once, rather than the whole model built before the first picture (#219)
+  fresh.partsCache.parseCache.parse(text);
+  mark('parsed');
   data = json;
   loader = fresh;
   built.clear();
@@ -228,13 +244,25 @@ async function show(i, animate = true) {
   stage.clear();
   stage.add(group);
   shown = group;
+  drawn = i;
   placeCamera(pic);
   moves = [];
   pose(group, animate && forward ? 'start' : 'built');
   if (animate && forward) move(group);
   outlineFades = Math.max(performance.now() + HOLD_MS, ...moves.map(m => m.t0 + DROP_MS));
+  ahead(i + 1, outlineFades + FADE_MS - performance.now());
   controls.autoRotate = pic.kind === 'finale';
   controls.autoRotateSpeed = FINALE_SPIN;
+}
+
+function ahead(i, after) {
+  // builds picture i while the reader looks at the one before (#219), once its pieces have settled (after, ms), when
+  // the page has nothing else to do; a failure shows if the reader goes there
+  const id = loadId;
+  const idle = window.requestIdleCallback ?? (f => f());
+  setTimeout(() => idle(() => {
+    if (id === loadId && i < data.steps.length) picture(i).catch(() => {});
+  }, { timeout: IDLE_MS }), Math.max(0, after));
 }
 
 function move(group) {
@@ -295,6 +323,7 @@ function tick(now) {
   controls.update();
   renderer.render(scene, camera);
   drawOutline(renderer, scene, camera, shown, Math.min(1, 1 - (now - outlineFades) / FADE_MS));
+  if (drawn >= 0) { mark(`shown ${drawn + 1}`); drawn = -1; }
   if (!SHOT) requestAnimationFrame(tick);
 }
 
@@ -390,17 +419,20 @@ function fail(err) {
 }
 
 async function start() {
-  if (!(await lockState()).open) {
-    location.replace(`../${location.search}`);
-    return;
-  }
-  const sets = await fetch('sets.json').then(r => r.json());
-  for (const { number, label } of sets) $('set').add(new Option(label, number));
-  const asked = new URLSearchParams(location.search).get('set') || location.hash.slice(1).split('/')[0];
-  const first = sets.some(s => s.number === asked) ? asked : sets[0].number;
-  $('set').value = first;
+  const open = lockState(window.unlock).then(state => {
+    mark('lock');
+    if (!state.open) {
+      loadId++;
+      location.replace(`../${location.search}`);
+    }
+    return state.open;
+  });
+  const { sets, number, files } = window.first;
+  mark('started');
+  for (const set of sets) $('set').add(new Option(set.label, set.number));
+  $('set').value = number;
   $('set').hidden = sets.length < 2;
-  await load(first);
+  await load(number, files, open);
 }
 
 resize();
