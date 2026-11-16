@@ -11,6 +11,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { lockState } from '../lock.js';
 import { asBooklet, curves, isGlass, setLines } from './look.js';
 import { drawOutline, prepare, setOutline } from './outline.js';
+import { showTimes } from './ajat.js';
 
 const DROP_LDU = 72;         // a new piece not drawn apart starts this far above its place, three bricks
 const HOLD_MS = 700;         // a picture stays as the page draws it this long before its pieces move
@@ -296,7 +297,9 @@ function label(i, pic) {
 function step(by) {
   if (!data) return;
   const i = at + by;
-  if (i >= 0 && i < data.steps.length) show(i).catch(fail);
+  if (i < 0 || i >= data.steps.length) return;
+  mark(`asked ${i + 1}`);
+  show(i).catch(fail);
 }
 
 function tick(now) {
@@ -436,5 +439,6 @@ async function start() {
 }
 
 resize();
+if (!SHOT && new URLSearchParams(location.search).has('ajat')) showTimes();
 if (!SHOT) requestAnimationFrame(tick);
 start().catch(fail);
