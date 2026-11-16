@@ -1,19 +1,23 @@
 // The 3D instructions: the booklet's pictures (NUMBER.json, tools/web3d.py), each built from the pieces as its page
 // draws them (turned over, posed, apart) and seen from its camera, the parts packed in NUMBER.mpd. A picture opens as
-// the page shows it; then the pieces drawn apart go to their places and the other new ones drop into theirs, until
-// the reader turns the model round themselves. ?shot opens a bare picture for tools/compare3d.py (window.shot).
+// the page shows it, its new pieces outlined (outline.js); then the pieces drawn apart go to their places and the
+// other new ones drop into theirs, the outline fading once they are in place, until the reader turns the model round
+// themselves. ?shot opens a bare picture for tools/compare3d.py (window.shot).
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { LDrawLoader } from 'three/addons/loaders/LDrawLoader.js';
 import { LDrawConditionalLineMaterial } from 'three/addons/materials/LDrawConditionalLineMaterial.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { lockState } from '../lock.js';
+import { asBooklet, curves, isGlass, setLines } from './look.js';
+import { drawOutline, prepare, setOutline } from './outline.js';
 
 const DROP_LDU = 72;         // a new piece not drawn apart starts this far above its place, three bricks
 const HOLD_MS = 700;         // a picture stays as the page draws it this long before its pieces move
 const DROP_MS = 650;
 const STAGGER_MS = 160;      // between the moves of one picture's units
 const CAMERA_MS = 800;
+const FADE_MS = 600;         // the new pieces' outline fades out this long once they are in place
 const FINALE_SPIN = 1.2;     // OrbitControls autoRotateSpeed on the finished model
 const FIT_MARGIN = 1.15;     // room round the pieces when they fill the screen (NUMBER.json's fit)
 const SHOT = new URLSearchParams(location.search).has('shot');
@@ -54,6 +58,8 @@ let view = null;         // { target, offset, up, unitsPerPx } the booklet camer
 let moves = [];
 let cameraTween = null;
 let loadId = 0;
+let shown = null;        // the picture's group on the screen
+let outlineFades = 0;    // when (performance.now()) its outline starts fading out
 
 function ease(t) {        // out-back: overshoots a little and settles, like a piece clicking on
   const c = 1.4;
@@ -65,6 +71,34 @@ function ldrawText(pic) {
   return `0 Picture\n${data.colours}${lines.join('\n')}\n`;
 }
 
+// The pieces are drawn in the booklet's colours (NUMBER.json's colours, ldrender's LEGO palette) with its
+// high-contrast studs; the figure keeps LDConfig's (figure.colours), as the page lights it as LEGO's booklets shade
+// theirs. A colour LDConfig hasn't got, the studs' sides, is the figure piece's own, as the library's studs draw it.
+function asFigure(pieces) {
+  // pieces: [[object, its colour code]]. Each material is copied once a colour, in the order the loader made them:
+  // three.js draws opaque faces in its materials' order where they lie on one another, as a print on its piece
+  const uses = [];
+  for (const [piece, part] of pieces) {
+    piece.traverse(o => {
+      if (o.material) [o.material].flat().forEach((m, k) => uses.push({ o, k, m, part }));
+    });
+  }
+  const copies = new Map();
+  for (const { m, part } of [...uses].sort((a, b) => a.m.id - b.m.id)) {
+    const key = `${m.id} ${part}`;
+    if (copies.has(key)) continue;
+    const [value, edge] = data.figure.colours[m.userData.code] ?? data.figure.colours[part];
+    const own = m.clone();
+    own.color.setStyle(m.isMeshStandardMaterial ? value : edge, THREE.SRGBColorSpace);
+    copies.set(key, own);
+  }
+  for (const { o, k, m, part } of uses) {
+    const own = copies.get(`${m.id} ${part}`);
+    if (Array.isArray(o.material)) o.material[k] = own;
+    else o.material = own;
+  }
+}
+
 function picture(i) {
   if (!built.has(i)) {
     const pic = data.steps[i];
@@ -73,12 +107,16 @@ function picture(i) {
         reject(new Error(`picture ${i + 1}: ${group.children.length} of ${pic.parts.length} pieces loaded`));
         return;
       }
+      const figure = group.children.map((child, n) => [child, pic.parts[n]]).filter(([, [file]]) => data.figure.parts.includes(file));
+      asFigure(figure.map(([child, [, colour]]) => [child, colour]));
+      group.children.filter(child => !figure.some(([f]) => f === child)).forEach(asBooklet);
       group.children.forEach((child, n) => {
         const [, , , unit, lift] = pic.parts[n];
         child.userData.unit = unit;
         child.userData.drawn = child.position.clone();
         child.userData.rest = lift ? child.position.clone().sub(new THREE.Vector3(...lift)) : child.position.clone();
       });
+      prepare(group, pic.outlined);
       resolve(group);
     }, reject)));
   }
@@ -116,7 +154,7 @@ function bookletView(pic) {
   const [w, h] = cam.size;
   const [x0, y0, x1, y1] = SHOT ? [0, 0, w, h] : pic.fit;
   const k = SHOT ? 1 : FIT_MARGIN;
-  return { target, offset: position.sub(target), up: fromLDraw(cam.up).normalize(),
+  return { target, offset: position.sub(target), up: fromLDraw(cam.up).normalize(), perPx,
     width: (x1 - x0) * perPx * k, height: (y1 - y0) * perPx * k,
     dx: ((x0 + x1) / 2 - w / 2) * perPx, dy: (h / 2 - (y0 + y1) / 2) * perPx };
 }
@@ -138,6 +176,13 @@ function frustum(v) {
   camera.left = v.dx - u.w / 2 * s; camera.right = v.dx + u.w / 2 * s;
   camera.top = v.dy + mid * s; camera.bottom = v.dy - (u.h - mid) * s;
   camera.updateProjectionMatrix();
+  // the booklet's line width (NUMBER.json's line, px of a picture) the same share of the picture: px on the screen,
+  // which the reader's zoom leaves as they are
+  if (!data) return;
+  const k = v.perPx / s * renderer.getPixelRatio();   // device px a picture's px
+  const buffer = renderer.getDrawingBufferSize(new THREE.Vector2());
+  setLines(data.line * k, buffer);
+  setOutline(data.outline, k, buffer);
 }
 
 function placeCamera(pic) {
@@ -157,7 +202,7 @@ function placeCamera(pic) {
     return;
   }
   const from = { target: controls.target.clone(), offset: camera.position.clone().sub(controls.target),
-    width: view.width / camera.zoom, height: view.height / camera.zoom, dx: view.dx, dy: view.dy };
+    width: view.width / camera.zoom, height: view.height / camera.zoom, dx: view.dx, dy: view.dy, perPx: view.perPx };
   view = to;
   camera.zoom = 1;
   cameraTween = { from, to, t0: performance.now() };
@@ -182,10 +227,12 @@ async function show(i, animate = true) {
   if (at !== i) return;
   stage.clear();
   stage.add(group);
+  shown = group;
   placeCamera(pic);
   moves = [];
   pose(group, animate && forward ? 'start' : 'built');
   if (animate && forward) move(group);
+  outlineFades = Math.max(performance.now() + HOLD_MS, ...moves.map(m => m.t0 + DROP_MS));
   controls.autoRotate = pic.kind === 'finale';
   controls.autoRotateSpeed = FINALE_SPIN;
 }
@@ -242,11 +289,12 @@ function tick(now) {
     camera.position.copy(controls.target).addScaledVector(dir, len);
     camera.up.copy(to.up);
     const mix = name => THREE.MathUtils.lerp(from[name], to[name], k);
-    frustum({ width: mix('width'), height: mix('height'), dx: mix('dx'), dy: mix('dy') });
+    frustum({ width: mix('width'), height: mix('height'), dx: mix('dx'), dy: mix('dy'), perPx: mix('perPx') });
     if (t >= 1) cameraTween = null;
   }
   controls.update();
   renderer.render(scene, camera);
+  drawOutline(renderer, scene, camera, shown, Math.min(1, 1 - (now - outlineFades) / FADE_MS));
   if (!SHOT) requestAnimationFrame(tick);
 }
 
@@ -256,10 +304,44 @@ function resize() {
   if (view) frustum(view);
 }
 
-// tools/compare3d.py: picture i as its page draws it, filling the window (sized as the picture), on nothing; newOnly:
-// only where its new pieces show, the older ones hiding what is behind them but drawn in nothing
+// tools/compare3d.py: picture i as its page draws it, filling the window (sized as the picture), on nothing. mode
+// 'all': as the page draws it, its new pieces outlined; 'new': only where its new pieces show, glass too, drawn whole,
+// the older ones hiding what is behind them but drawn in nothing, older glass not (as the booklet's key: ADR-0066); 'ids': each piece's faces in one unlit colour that numbers it (idColour()),
+// without lines; 'curves': white where a face is curved, black where flat, without lines (look.js curves); 'outline':
+// the outline alone (outline.js)
 const hidden = new THREE.MeshBasicMaterial({ colorWrite: false });
-window.shot = async (i, newOnly = false) => {
+const whole = new THREE.MeshBasicMaterial({ toneMapped: false });
+const ID_LEVELS = 16;    // levels a channel of an id colour takes, 255 / 15 apart: far apart enough to survive rounding
+
+function idColour(n) {
+  // piece n (from 0) as the colour compare3d.piece_labels() reads back: n + 1 in base ID_LEVELS, red the highest digit
+  const step = 255 / (ID_LEVELS - 1);
+  const digits = [Math.floor((n + 1) / ID_LEVELS ** 2), Math.floor((n + 1) / ID_LEVELS) % ID_LEVELS, (n + 1) % ID_LEVELS];
+  return new THREE.Color().setRGB(...digits.map(d => d * step / 255), THREE.SRGBColorSpace);
+}
+
+function shotLook(group, mode) {
+  // swaps the pieces' materials for the shot's mode: the list of [object, material, visible] to put back
+  const swapped = [];
+  group.children.forEach((child, n) => {
+    if (mode === 'all' || mode === 'outline') return;
+    const isNew = mode === 'new' && child.userData.unit >= 0;
+    const id = { ids: () => new THREE.MeshBasicMaterial({ color: idColour(n), toneMapped: false }), curves: () => curves,
+      new: () => (isNew ? whole : hidden) }[mode]();
+    child.traverse(o => {
+      if (!o.material) return;
+      swapped.push([o, o.material, o.visible]);
+      const glass = isGlass(o);
+      if (o.isMesh && !o.isLineSegments2) {
+        o.material = id;
+        if (mode === 'new' && !isNew && glass) o.visible = false;
+      } else if (!isNew) o.visible = false;
+    });
+  });
+  return swapped;
+}
+
+window.shot = async (i, mode = 'all') => {
   while (!data) await new Promise(r => setTimeout(r, 50));
   at = i;
   shownCamera = '';
@@ -267,22 +349,13 @@ window.shot = async (i, newOnly = false) => {
   stage.clear();
   stage.add(group);
   pose(group, 'drawn');
-  const swapped = [];
-  if (newOnly) {
-    for (const child of group.children) {
-      if (child.userData.unit >= 0) continue;
-      child.traverse(o => {
-        if (!o.material) return;
-        swapped.push([o, o.material, o.visible]);
-        if (o.isMesh) o.material = hidden;
-        else o.visible = false;
-      });
-    }
-  }
+  const swapped = shotLook(group, mode);
   resize();
   placeCamera(data.steps[i]);
   controls.update();
   renderer.render(scene, camera);
+  if (mode === 'outline') renderer.clear();
+  if (mode === 'all' || mode === 'outline') drawOutline(renderer, scene, camera, group, 1);
   for (const [o, material, visible] of swapped) { o.material = material; o.visible = visible; }
   return data.steps.length;
 };
