@@ -2,7 +2,11 @@
 // draws them (turned over, posed, apart) and seen from its camera, the parts packed in its model file (web3d.MODEL). A
 // picture opens as the page shows it, its new pieces outlined (outline.js); then the pieces drawn apart go to their
 // places and the other new ones drop into theirs, the outline fading once they are in place, until the reader turns the
-// model round themselves. ?shot opens a bare picture for tools/compare3d.py (window.shot).
+// model round themselves. From one picture to the next the page changes as the paper does (#220, ADR-0068): nothing
+// moves where the camera is the same; a picture turned (its badge) turns the model in the reader's hands, about its
+// middle; another sub-model is a short fade, as a page turns; else the camera moves there once. ?shot opens a bare
+// picture for tools/compare3d.py (window.shot); window.track, an array, gets each frame's middle of the model on the
+// screen (tools/moves3d.cjs).
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { LDrawLoader } from 'three/addons/loaders/LDrawLoader.js';
@@ -17,7 +21,9 @@ const DROP_LDU = 72;         // a new piece not drawn apart starts this far abov
 const HOLD_MS = 700;         // a picture stays as the page draws it this long before its pieces move
 const DROP_MS = 650;
 const STAGGER_MS = 160;      // between the moves of one picture's units
-const CAMERA_MS = 800;
+const CAMERA_MS = 800;       // a camera move, or a turn of the model in the hands
+const CUT_MS = 200;          // a fade to another sub-model: out, then in
+const CUT_SWAP = 0.5;        // the share of a cut at which the screen is blank and the next picture goes on
 const FADE_MS = 600;         // the new pieces' outline fades out this long once they are in place
 const IDLE_MS = 1000;        // the next picture is built when the page is idle, or after this long at most
 const FINALE_SPIN = 1.2;     // OrbitControls autoRotateSpeed on the finished model
@@ -44,24 +50,31 @@ const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, -20000, 20000);
 const controls = new OrbitControls(camera, canvas);
 controls.enableDamping = true;
 controls.enablePan = false;
-controls.addEventListener('start', () => { cameraTween = null; controls.autoRotate = false; });
+controls.addEventListener('start', () => {
+  if (change) settle(change, true);
+  controls.autoRotate = false;
+});
 
-// LDraw's y points down: turned over, the model stands the right way up in three.js
+// LDraw's y points down: turned over, the model stands the right way up in three.js. The hands hold it: a picture
+// turned from the one before turns there, about the model's middle, the camera still
+const hands = new THREE.Group();
+scene.add(hands);
 const stage = new THREE.Group();
 stage.rotation.x = Math.PI;
-scene.add(stage);
+stage.updateMatrix();
+hands.add(stage);
 const fromLDraw = ([x, y, z]) => new THREE.Vector3(x, -y, -z);
 
 let data = null;         // NUMBER.json
 let loader = null;       // holds the parts of the model file once loaded
 const built = new Map(); // picture index -> its group (a promise while it is built)
-let at = -1;             // the picture shown
-let shownCamera = '';    // the booklet camera last placed: the same one leaves the reader's view as it is
-let view = null;         // { target, offset, up, unitsPerPx } the booklet camera, in three.js axes
+let at = -1;             // the picture asked for
+let onStage = -1;        // the picture on the stage: the same camera as the next leaves the reader's view as it is
+let view = null;         // the view on the screen (bookletView()), the reader's zoom aside
 let moves = [];
-let cameraTween = null;
+let change = null;       // the change under way from the picture on the stage to the next (begin())
 let loadId = 0;
-let shown = null;        // the picture's group on the screen
+let shown = null;        // the picture's group on the stage
 let outlineFades = 0;    // when (performance.now()) its outline starts fading out
 let drawn = -1;          // a picture just put on the stage, marked once it is drawn
 
@@ -128,7 +141,18 @@ function picture(i) {
         child.userData.drawn = child.position.clone();
         child.userData.rest = lift ? child.position.clone().sub(new THREE.Vector3(...lift)) : child.position.clone();
       });
+      pose(group, 'built');
+      group.userData.middle = middle(group.children);
+      group.userData.older = middle(group.children.filter(child => child.userData.unit < 0)) ?? group.userData.middle;
+      pose(group, 'drawn');   // where the grown copies' places (outlined) are given from
       prepare(group, pic.outlined);
+      // the picture's rotation (NUMBER.json's): its sub-model turned over as drawn, its pieces in the sub-model's places
+      const turn = new THREE.Group();
+      const r = pic.rotation;
+      turn.quaternion.setFromRotationMatrix(new THREE.Matrix4().set(r[0], r[1], r[2], 0, r[3], r[4], r[5], 0, r[6], r[7], r[8], 0, 0, 0, 0, 1));
+      turn.updateMatrix();
+      turn.add(group);
+      group.userData.up = new THREE.Vector3(0, -1, 0).applyQuaternion(turn.quaternion.clone().invert());
       mark(`built ${i + 1}`);
       resolve(group);
     }, reject)));
@@ -155,25 +179,79 @@ async function load(number, files = window.setFiles(number), open = Promise.reso
   loader = fresh;
   built.clear();
   stage.clear();
-  shownCamera = '';
+  onStage = -1;
+  change = null;
+  shown = null;
+  canvas.style.opacity = '';
+  hands.position.set(0, 0, 0);
+  hands.quaternion.identity();
   $('loading').classList.add('gone');
   if (SHOT) return;
   const wanted = parseInt(location.hash.split('/')[1], 10) - 1;
   show(Number.isFinite(wanted) ? Math.max(0, Math.min(wanted, data.steps.length - 1)) : 0, false);
 }
 
+function middle(pieces) {
+  // the middle of pieces' box, in their group's frame, or null for none
+  const box = new THREE.Box3();
+  for (const piece of pieces) box.expandByObject(piece);
+  return box.isEmpty() ? null : box.getCenter(new THREE.Vector3());
+}
+
 function bookletView(pic) {
   // the booklet camera, and what of its picture fills the screen: the whole picture for a shot, else the box its
-  // pieces cover (fit), in LDU across and up, and that box's middle off the picture's (dx right, dy up)
+  // pieces cover (fit), in LDU across and up. The camera looks at that box's middle, moved off the picture's in the
+  // world, so that a move between two cameras doesn't carry the model off the screen's middle (#220)
   const cam = pic.camera;
-  const target = fromLDraw(cam.target), position = fromLDraw(cam.position);
-  const perPx = THREE.MathUtils.degToRad(cam.fov) * position.distanceTo(target) / cam.size[1];
+  const centre = fromLDraw(cam.target), position = fromLDraw(cam.position);
+  const distance = position.distanceTo(centre);
+  const perPx = THREE.MathUtils.degToRad(cam.fov) * distance / cam.size[1];
   const [w, h] = cam.size;
   const [x0, y0, x1, y1] = SHOT ? [0, 0, w, h] : pic.fit;
   const k = SHOT ? 1 : FIT_MARGIN;
-  return { target, offset: position.sub(target), up: fromLDraw(cam.up).normalize(), perPx,
-    width: (x1 - x0) * perPx * k, height: (y1 - y0) * perPx * k,
-    dx: ((x0 + x1) / 2 - w / 2) * perPx, dy: (h / 2 - (y0 + y1) / 2) * perPx };
+  const up = fromLDraw(cam.up).normalize();
+  const quaternion = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().lookAt(position, centre, up));
+  const off = new THREE.Vector3(((x0 + x1) / 2 - w / 2) * perPx, (h / 2 - (y0 + y1) / 2) * perPx, 0);
+  return { target: centre.add(off.applyQuaternion(quaternion)), quaternion, up, distance, perPx,
+    width: (x1 - x0) * perPx * k, height: (y1 - y0) * perPx * k, area: usable() };
+}
+
+function viewKey(pic) {
+  return JSON.stringify([pic.camera, pic.fit, pic.rotation]);
+}
+
+function currentView() {
+  // the view on the screen now, the reader's turning and zoom in it
+  return { target: controls.target.clone(), quaternion: camera.quaternion.clone(), up: camera.up.clone(),
+    distance: camera.position.distanceTo(controls.target), perPx: view.perPx,
+    width: view.width / camera.zoom, height: view.height / camera.zoom, area: view.area };
+}
+
+function mixed(a, b, k) {
+  // between views a and b: the whole orientation slerped, up and all, the target moved in the world, the zoom by
+  // ratio, so it changes as fast at each end, and the part of the screen it fills (the header's chips change with
+  // the step) moved as smoothly
+  const quaternion = a.quaternion.clone().slerp(b.quaternion, k);
+  const ratio = name => a[name] * (b[name] / a[name]) ** k;
+  return { target: a.target.clone().lerp(b.target, k), quaternion, up: new THREE.Vector3(0, 1, 0).applyQuaternion(quaternion),
+    distance: THREE.MathUtils.lerp(a.distance, b.distance, k), perPx: ratio('perPx'), width: ratio('width'), height: ratio('height'),
+    area: { ...b.area, top: THREE.MathUtils.lerp(a.area.top, b.area.top, k), bottom: THREE.MathUtils.lerp(a.area.bottom, b.area.bottom, k) } };
+}
+
+function place(v) {
+  view = v;
+  camera.zoom = 1;
+  camera.quaternion.copy(v.quaternion);
+  camera.up.copy(v.up);
+  camera.position.set(0, 0, v.distance).applyQuaternion(v.quaternion).add(v.target);
+  camera.updateMatrixWorld();
+  controls.target.copy(v.target);
+  frustum(v);
+}
+
+function cameraMatrix(v) {
+  return new THREE.Matrix4().compose(new THREE.Vector3(0, 0, v.distance).applyQuaternion(v.quaternion).add(v.target),
+    v.quaternion, new THREE.Vector3(1, 1, 1));
 }
 
 function usable() {
@@ -186,12 +264,13 @@ function usable() {
 }
 
 function frustum(v) {
-  // the booklet picture's whole width and height fit the usable part of the screen, its middle in that part's middle
-  const u = usable();
+  // the booklet picture's whole width and height fit the usable part of the screen (v.area, usable()), its middle in
+  // that part's middle
+  const u = v.area;
   const s = Math.max(v.width / u.w, v.height / (u.bottom - u.top));   // LDU per CSS px
   const mid = (u.top + u.bottom) / 2;
-  camera.left = v.dx - u.w / 2 * s; camera.right = v.dx + u.w / 2 * s;
-  camera.top = v.dy + mid * s; camera.bottom = v.dy - (u.h - mid) * s;
+  camera.left = -u.w / 2 * s; camera.right = u.w / 2 * s;
+  camera.top = mid * s; camera.bottom = -(u.h - mid) * s;
   camera.updateProjectionMatrix();
   // the booklet's line width (NUMBER.json's line, px of a picture) the same share of the picture: px on the screen,
   // which the reader's zoom leaves as they are
@@ -202,36 +281,13 @@ function frustum(v) {
   setOutline(data.outline, k, buffer);
 }
 
-function placeCamera(pic) {
-  const key = JSON.stringify([pic.camera, pic.fit]);
-  if (key === shownCamera) return;
-  const to = bookletView(pic);
-  const first = shownCamera === '';
-  shownCamera = key;
-  if (first || SHOT) {
-    cameraTween = null;
-    view = to;
-    camera.zoom = 1;
-    camera.up.copy(to.up);
-    controls.target.copy(to.target);
-    camera.position.copy(to.target).add(to.offset);
-    frustum(to);
-    return;
-  }
-  const from = { target: controls.target.clone(), offset: camera.position.clone().sub(controls.target),
-    width: view.width / camera.zoom, height: view.height / camera.zoom, dx: view.dx, dy: view.dy, perPx: view.perPx };
-  view = to;
-  camera.zoom = 1;
-  cameraTween = { from, to, t0: performance.now() };
-}
-
 function pose(group, how) {
   // how: 'drawn' as the page draws it, 'built' every piece in its place, 'start' ready to move ('drawn', the new
-  // pieces not drawn apart above their places)
+  // pieces not drawn apart above their places, up as the picture is turned)
   for (const child of group.children) {
     const { unit, drawn, rest } = child.userData;
     child.position.copy(how === 'built' ? rest : drawn);
-    if (how === 'start' && unit >= 0 && drawn.equals(rest)) child.position.y -= DROP_LDU;
+    if (how === 'start' && unit >= 0 && drawn.equals(rest)) child.position.addScaledVector(group.userData.up, DROP_LDU);
   }
 }
 
@@ -242,17 +298,91 @@ async function show(i, animate = true) {
   label(i, pic);
   const group = await picture(i);
   if (at !== i) return;
+  begin(changeTo(i), i, group, animate && forward);
+}
+
+function changeTo(i) {
+  // how the screen changes from the picture on the stage to picture i (ADR-0068)
+  if (onStage < 0 || SHOT) return 'place';
+  const was = data.steps[onStage], pic = data.steps[i];
+  if (!change && viewKey(was) === viewKey(pic)) return 'none';
+  if (i === onStage) return 'move';   // back, before the change from it ended: back to its own view
+  const subject = p => [p.file, p.kind === 'finale'].join();   // the finished model is posed: another subject
+  if (subject(was) !== subject(pic) || Math.abs(i - onStage) !== 1) return 'cut';
+  return data.steps[Math.max(i, onStage)].turn ? 'turn' : 'move';
+}
+
+function begin(kind, i, group, drop) {
+  const to = bookletView(data.steps[i]);
+  if (kind === 'none') { put(i, group, drop); return; }
+  if (kind === 'place') { settle({ i, group, drop, to }, true); return; }
+  const now = performance.now();
+  const from = currentView();
+  place(from);
+  if (kind === 'cut') {
+    change = { kind, i, group, drop, to, t0: now, ms: CUT_MS, opacity: Number(canvas.style.opacity || 1) };
+    return;
+  }
+  canvas.style.opacity = '';
+  // the end: the camera at to's, or still for a turn (its zoom and area to's); the hands hold the picture on the stage where
+  // the end camera sees it as to's camera sees the next, so that they swap unseen
+  const end = kind === 'turn' ? { ...from, perPx: to.perPx, width: to.width, height: to.height, area: to.area } : to;
+  const old = shown.parent.matrix, next = group.parent.matrix;
+  hands.updateMatrix();
+  const handsEnd = cameraMatrix(end).multiply(cameraMatrix(to).invert()).multiply(stage.matrix).multiply(next)
+    .multiply(old.clone().invert()).multiply(stage.matrix.clone().invert());
+  const centre = shown.userData.middle.clone().applyMatrix4(old).applyMatrix4(stage.matrix);   // in the hands' frame
+  change = { kind, i, group, drop, to, from, end, t0: now, ms: CAMERA_MS, handsFrom: hands.matrix.clone(), handsEnd, centre };
+}
+
+function advance(c, now) {
+  const t = Math.min(1, Math.max(0, (now - c.t0) / c.ms));
+  if (c.kind === 'cut') {
+    if (t >= CUT_SWAP && !c.swapped) {
+      c.swapped = true;
+      settle(c, false);
+    }
+    canvas.style.opacity = t < CUT_SWAP ? c.opacity * (1 - t / CUT_SWAP) : (t - CUT_SWAP) / (1 - CUT_SWAP);
+    if (t >= 1) { canvas.style.opacity = ''; change = null; }
+    return;
+  }
+  const k = t * t * (3 - 2 * t);
+  place(mixed(c.from, c.end, k));
+  turnHands(c, k);
+  if (t >= 1) settle(c, true);
+}
+
+function turnHands(c, k) {
+  // the hands between where they were and their end, turned by slerp about the model's middle, which moves straight
+  const [p0, q0, p1, q1] = [new THREE.Vector3(), new THREE.Quaternion(), new THREE.Vector3(), new THREE.Quaternion()];
+  c.handsFrom.decompose(p0, q0, new THREE.Vector3());
+  c.handsEnd.decompose(p1, q1, new THREE.Vector3());
+  hands.quaternion.copy(q0.slerp(q1, k));
+  const a = c.centre.clone().applyMatrix4(c.handsFrom), b = c.centre.clone().applyMatrix4(c.handsEnd);
+  hands.position.copy(a.lerp(b, k).sub(c.centre.clone().applyQuaternion(hands.quaternion)));
+}
+
+function settle(c, done) {
+  // the next picture on the stage, seen from its camera, the hands empty; done: the change is over
+  hands.position.set(0, 0, 0);
+  hands.quaternion.identity();
+  place(c.to);
+  if (done) { change = null; canvas.style.opacity = ''; }
+  if (onStage !== c.i || shown !== c.group) put(c.i, c.group, c.drop);
+}
+
+function put(i, group, drop) {
   stage.clear();
-  stage.add(group);
+  stage.add(group.parent);
   shown = group;
+  onStage = i;
   drawn = i;
-  placeCamera(pic);
   moves = [];
-  pose(group, animate && forward ? 'start' : 'built');
-  if (animate && forward) move(group);
+  pose(group, drop ? 'start' : 'built');
+  if (drop) move(group);
   outlineFades = Math.max(performance.now() + HOLD_MS, ...moves.map(m => m.t0 + DROP_MS));
   ahead(i + 1, outlineFades + FADE_MS - performance.now());
-  controls.autoRotate = pic.kind === 'finale';
+  controls.autoRotate = data.steps[i].kind === 'finale';
   controls.autoRotateSpeed = FINALE_SPIN;
 }
 
@@ -308,31 +438,29 @@ function tick(now) {
     child.position.lerpVectors(from, to, ease(t));
     return t < 1;
   });
-  if (cameraTween) {
-    const t = Math.min(1, (now - cameraTween.t0) / CAMERA_MS);
-    const k = t * t * (3 - 2 * t);
-    const { from, to } = cameraTween;
-    controls.target.lerpVectors(from.target, to.target, k);
-    const len = THREE.MathUtils.lerp(from.offset.length(), to.offset.length(), k);
-    const dir = from.offset.clone().normalize();
-    dir.applyQuaternion(new THREE.Quaternion().slerp(
-      new THREE.Quaternion().setFromUnitVectors(dir, to.offset.clone().normalize()), k));
-    camera.position.copy(controls.target).addScaledVector(dir, len);
-    camera.up.copy(to.up);
-    const mix = name => THREE.MathUtils.lerp(from[name], to[name], k);
-    frustum({ width: mix('width'), height: mix('height'), dx: mix('dx'), dy: mix('dy'), perPx: mix('perPx') });
-    if (t >= 1) cameraTween = null;
-  }
-  controls.update();
+  if (change) advance(change, now);
+  else controls.update();
   renderer.render(scene, camera);
   drawOutline(renderer, scene, camera, shown, Math.min(1, 1 - (now - outlineFades) / FADE_MS));
   if (drawn >= 0) { mark(`shown ${drawn + 1}`); drawn = -1; }
+  if (Array.isArray(window.track) && shown) window.track.push(tracked(now));
   if (!SHOT) requestAnimationFrame(tick);
+}
+
+function tracked(now) {
+  // this frame for tools/moves3d.cjs: the middle (CSS px) of the picture's pieces in place, and of its older ones
+  const onScreen = p => {
+    const s = p.clone().applyMatrix4(shown.matrixWorld).project(camera);
+    return [(s.x + 1) / 2 * window.innerWidth, (1 - s.y) / 2 * window.innerHeight];
+  };
+  return { t: now, picture: onStage, middle: onScreen(shown.userData.middle), older: onScreen(shown.userData.older),
+    opacity: Number(canvas.style.opacity || 1), change: change?.kind ?? null };
 }
 
 function resize() {
   const w = window.innerWidth, h = window.innerHeight;
   renderer.setSize(w, h, false);
+  for (const v of [view, change?.from, change?.end, change?.to]) if (v) v.area = usable();
   if (view) frustum(view);
 }
 
@@ -376,14 +504,13 @@ function shotLook(group, mode) {
 window.shot = async (i, mode = 'all') => {
   while (!data) await new Promise(r => setTimeout(r, 50));
   at = i;
-  shownCamera = '';
   const group = await picture(i);
   stage.clear();
-  stage.add(group);
+  stage.add(group.parent);
   pose(group, 'drawn');
   const swapped = shotLook(group, mode);
   resize();
-  placeCamera(data.steps[i]);
+  place(bookletView(data.steps[i]));
   controls.update();
   renderer.render(scene, camera);
   if (mode === 'outline') renderer.clear();
