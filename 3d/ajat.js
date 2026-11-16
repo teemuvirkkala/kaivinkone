@@ -4,11 +4,18 @@
 const PREFIX = '3d:';
 const GZIPPED = 0.5;   // a file that came in under this share of its unpacked size was compressed
 const KB = 1000;
-const PHASES = [['started', 'käynnissä'], ['fetched', 'haettu'], ['parsed', 'luettu'], ['built 1', 'rakennettu']];
+// each phase's mark (the first picture's, whichever it is: the address may open on any step) and its name
+const PHASES = [['started', 'käynnissä'], ['fetched', 'haettu'], ['parsed', 'luettu'], ['built ', 'rakennettu']];
 
 function marks() {
   return new Map(performance.getEntriesByType('mark').filter(m => m.name.startsWith(PREFIX))
     .map(m => [m.name.slice(PREFIX.length), m.startTime]));
+}
+
+function first(m, name) {
+  // when the first mark whose name starts with name came, or undefined
+  const times = [...m].filter(([k]) => k.startsWith(name)).map(([, at]) => at);
+  return times.length ? Math.min(...times) : undefined;
 }
 
 function model() {
@@ -33,8 +40,10 @@ function steps(m) {
 function text() {
   const m = marks();
   const net = navigator.connection?.effectiveType;
-  const lines = [`ensimmäinen kuva ${m.has('shown 1') ? `${Math.round(m.get('shown 1'))} ms` : '…'}${net ? ` (${net})` : ''}`,
-    PHASES.filter(([k]) => m.has(k)).map(([k, label]) => `${label} ${Math.round(m.get(k))}`).join(' · '), model()];
+  const shown = first(m, 'shown ');
+  const lines = [`ensimmäinen kuva ${shown === undefined ? '…' : `${Math.round(shown)} ms`}${net ? ` (${net})` : ''}`,
+    PHASES.filter(([k]) => first(m, k) !== undefined).map(([k, label]) => `${label} ${Math.round(first(m, k))}`).join(' · '),
+    model()];
   const times = steps(m);
   if (times.length) {
     const sorted = times.map(([, ms]) => ms).sort((a, b) => a - b);
