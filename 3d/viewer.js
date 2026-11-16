@@ -1,8 +1,8 @@
 // The 3D instructions: the booklet's pictures (NUMBER.json, tools/web3d.py), each built from the pieces as its page
-// draws them (turned over, posed, apart) and seen from its camera, the parts packed in NUMBER.mpd. A picture opens as
-// the page shows it, its new pieces outlined (outline.js); then the pieces drawn apart go to their places and the
-// other new ones drop into theirs, the outline fading once they are in place, until the reader turns the model round
-// themselves. ?shot opens a bare picture for tools/compare3d.py (window.shot).
+// draws them (turned over, posed, apart) and seen from its camera, the parts packed in its model file (web3d.MODEL). A
+// picture opens as the page shows it, its new pieces outlined (outline.js); then the pieces drawn apart go to their
+// places and the other new ones drop into theirs, the outline fading once they are in place, until the reader turns the
+// model round themselves. ?shot opens a bare picture for tools/compare3d.py (window.shot).
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { LDrawLoader } from 'three/addons/loaders/LDrawLoader.js';
@@ -53,7 +53,7 @@ scene.add(stage);
 const fromLDraw = ([x, y, z]) => new THREE.Vector3(x, -y, -z);
 
 let data = null;         // NUMBER.json
-let loader = null;       // holds the parts of NUMBER.mpd once loaded
+let loader = null;       // holds the parts of the model file once loaded
 const built = new Map(); // picture index -> its group (a promise while it is built)
 let at = -1;             // the picture shown
 let shownCamera = '';    // the booklet camera last placed: the same one leaves the reader's view as it is
@@ -136,11 +136,11 @@ function picture(i) {
   return built.get(i);
 }
 
-// A set's NUMBER.json and NUMBER.mpd (files: index.html's setFiles()), shown once open (a promise) is true
+// A set's NUMBER.json and model file (files: index.html's setFiles()), shown once open (a promise) is true
 async function load(number, files = window.setFiles(number), open = Promise.resolve(true)) {
   const id = ++loadId;
   $('loading').classList.remove('gone');
-  const [json, text] = await Promise.all([files.json, files.mpd]);
+  const [json, text] = await Promise.all([files.json, files.model]);
   mark('fetched');
   if (id !== loadId || !(await open)) return;
   const fresh = new LDrawLoader();

@@ -2,7 +2,7 @@
 <html lang="fi"><head><meta charset="utf-8"><meta name="robots" content="noindex">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Kaivinkone 3D</title>
-<script>window.sets = [{"number": "KAIVINKONE001", "label": "Pyörillä, ohjaamo vasemmalla"}];</script>
+<script>window.sets = [{"number": "KAIVINKONE001", "label": "Pyörillä, ohjaamo vasemmalla"}]; window.model = ".mpd.txt";</script>
 <script>
 // The set's files and the lock's time are asked for at once, before the stylesheet and while the page's modules load
 // (#219): viewer.js takes them from here, the lock checked before it shows the model
@@ -12,7 +12,7 @@ window.setFiles = number => {
     if (!r.ok) throw new Error(`${number}${ext}: ${r.status}`);
     return r[as]();
   });
-  return { json: get('.json', 'json'), mpd: get('.mpd', 'text') };
+  return { json: get('.json', 'json'), model: get(window.model, 'text') };
 };
 window.first = (sets => {   // window.sets: [{number, label}], tools/web3d.py writes them in
   const asked = new URLSearchParams(location.search).get('set') || location.hash.slice(1).split('/')[0];

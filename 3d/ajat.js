@@ -13,7 +13,7 @@ function marks() {
 
 function model() {
   // the model file as the browser fetched it: whether gzipped, its sizes, or that it came from the cache
-  const file = performance.getEntriesByType('resource').find(r => new URL(r.name).pathname.endsWith('.mpd'));
+  const file = performance.getEntriesByType('resource').find(r => new URL(r.name).pathname.endsWith(window.model));
   if (!file) return 'malli: –';
   const size = `${Math.round(file.encodedBodySize / KB)} / ${Math.round(file.decodedBodySize / KB)} kt`;
   const gzipped = file.encodedBodySize < file.decodedBodySize * GZIPPED ? 'gzip ✓' : 'ei gzip ✗';
