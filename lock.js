@@ -46,15 +46,21 @@ function clock(ms) {
   return `${days ? `${days} pv ` : ''}${pad(Math.floor(s / 3600) % 24)}:${pad(Math.floor(s / 60) % 60)}:${pad(s % 60)}`;
 }
 
-// Shows `locked` with a countdown until the site opens, filling its [data-lock] parts (side, count, word, clock, when),
-// then hides it, shows `content` and calls onOpen, with true if it opened while the page was open
+// Shows `locked` with a countdown until the site opens, filling its [data-lock] parts (side, count, word, clock, when)
+// and the page's title, then hides it, shows `content` (and its data-title as the page's title) and calls onOpen,
+// with true if it opened while the page was open
 export async function guard({ locked, content, onOpen = () => {} }) {
   const state = await lockState();
   const part = name => locked.querySelector(`[data-lock="${name}"]`);
-  const open = live => { locked.hidden = true; content.hidden = false; onOpen(live); };
+  const open = live => {
+    locked.hidden = true;
+    content.hidden = false;
+    if (content.dataset.title) document.title = content.dataset.title;   // the page's title, kept till it opens
+    onOpen(live);
+  };
   if (state.open) return open(false);
   const when = state.at.toLocaleString('fi-FI', { timeZone: ZONE, day: 'numeric', month: 'numeric', hour: 'numeric', minute: '2-digit' });
-  part('when').textContent = `Ohjeet aukeavat ${when}. · The instructions open then.`;
+  part('when').textContent = `Aukeaa ${when}. · Opens then.`;   // not what opens: a surprise till then
   locked.hidden = false;
   const tick = () => {
     const left = state.at - state.now();
@@ -62,6 +68,7 @@ export async function guard({ locked, content, onOpen = () => {} }) {
     const words = nights(left);
     for (const name of ['side', 'count', 'word']) part(name).textContent = words[name];
     part('count').parentElement.setAttribute('aria-label', words.said);
+    document.title = words.said;
     part('clock').textContent = clock(left);
     setTimeout(tick, TICK_MS - (Date.now() % TICK_MS));
   };
