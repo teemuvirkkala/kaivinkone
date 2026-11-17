@@ -18,7 +18,6 @@ import { asGloss, isGlass, lightUp, setCamera, setLook, setRims } from './look.j
 import { drawOutline, prepare, setOutline } from './outline.js';
 import { gpuTimer, showTimes } from './ajat.js';
 
-const DROP_LDU = 72;         // a new piece not drawn apart starts this far above its place, three bricks
 const HOLD_MS = 700;         // a picture stays as the page draws it this long before its pieces move
 const DROP_MS = 650;
 const STAGGER_MS = 160;      // between the moves of one picture's units
@@ -80,9 +79,10 @@ let turning = false;     // ?esittely: the page round it has said 'turn'
 let paused = false;      // ?esittely: and then 'pause', no frames drawn till the next 'turn'
 let stopped = false;     // the frames stopped, paused: the next 'turn' starts them again, once
 
-function ease(t) {        // out-back: overshoots a little and settles, like a piece clicking on
-  const c = 1.4;
-  return 1 + (c + 1) * (t - 1) ** 3 + c * (t - 1) ** 2;
+function ease(t) {
+  // smootherstep: still at both ends, its speed and acceleration rising and falling without a jolt, and never past
+  // its end, where the piece would sink into the one it goes on (ADR-0072)
+  return t * t * t * (t * (6 * t - 15) + 10);
 }
 
 function ldrawText(pic) {
@@ -98,13 +98,19 @@ function picture(i) {
         reject(new Error(`picture ${i + 1}: ${group.children.length} of ${pic.parts.length} pieces loaded`));
         return;
       }
+      group.userData.waits = pic.waits ?? {};   // the cover (?esittely) has neither: nothing of it moves
       const tyres = new Set(data.look.tyres);
       group.children.forEach((child, n) => asGloss(child, n, tyres.has(pic.parts[n][0].toLowerCase())));
       group.children.forEach((child, n) => {
         const [, , , unit, lift] = pic.parts[n];
         child.userData.unit = unit;
+        child.userData.index = n;
         child.userData.drawn = child.position.clone();
         child.userData.rest = lift ? child.position.clone().sub(new THREE.Vector3(...lift)) : child.position.clone();
+        // where it starts from: its way (NUMBER.json's, tools/insertion.py) back from its place, along which it
+        // slides on through no piece; a piece drawn apart, from where it is drawn. None for an older piece
+        const way = pic.ways?.[unit];
+        child.userData.start = way ? child.userData.rest.clone().addScaledVector(new THREE.Vector3(...way), way[3]) : null;
       });
       pose(group, 'built');
       group.userData.middle = middle(group.children);
@@ -117,7 +123,6 @@ function picture(i) {
       turn.quaternion.setFromRotationMatrix(new THREE.Matrix4().set(r[0], r[1], r[2], 0, r[3], r[4], r[5], 0, r[6], r[7], r[8], 0, 0, 0, 0, 1));
       turn.updateMatrix();
       turn.add(group);
-      group.userData.up = new THREE.Vector3(0, -1, 0).applyQuaternion(turn.quaternion.clone().invert());
       mark(`built ${i + 1}`);
       resolve(group);
     }, reject)));
@@ -248,12 +253,11 @@ function frustum(v) {
 }
 
 function pose(group, how) {
-  // how: 'drawn' as the page draws it, 'built' every piece in its place, 'start' ready to move ('drawn', the new
-  // pieces not drawn apart above their places, up as the picture is turned)
+  // how: 'drawn' as the page draws it, 'built' every piece in its place, 'start' ready to move (the new pieces
+  // where they start from, the older ones in place)
   for (const child of group.children) {
-    const { unit, drawn, rest } = child.userData;
-    child.position.copy(how === 'built' ? rest : drawn);
-    if (how === 'start' && unit >= 0 && drawn.equals(rest)) child.position.addScaledVector(group.userData.up, DROP_LDU);
+    const { drawn, rest, start } = child.userData;
+    child.position.copy(how === 'built' ? rest : how === 'start' ? start ?? rest : drawn);
   }
 }
 
@@ -363,11 +367,18 @@ function ahead(i, after) {
 }
 
 function move(group) {
+  // each unit a moment after the one before, or once the units it waits for (NUMBER.json's waits: stacked on them,
+  // it would meet them on the way) have landed
+  const starts = new Map();
+  const units = [...new Set(group.children.map(c => c.userData.unit).filter(u => u >= 0))].sort((a, b) => a - b);
   const t0 = performance.now() + HOLD_MS;
+  for (const unit of units) {
+    const after = (group.userData.waits[unit] ?? []).map(v => starts.get(v) + DROP_MS);
+    starts.set(unit, Math.max(t0 + STAGGER_MS * unit, ...after));
+  }
   for (const child of group.children) {
     const { unit, rest } = child.userData;
-    if (unit < 0) continue;
-    moves.push({ child, from: child.position.clone(), to: rest, t0: t0 + STAGGER_MS * unit });
+    if (unit >= 0) moves.push({ child, from: child.position.clone(), to: rest, t0: starts.get(unit) });
   }
 }
 
@@ -428,12 +439,22 @@ function tick(now) {
 
 function tracked(now) {
   // this frame for tools/moves3d.cjs: the middle (CSS px) of the picture's pieces in place, and of its older ones
-  const onScreen = p => {
-    const s = p.clone().applyMatrix4(shown.matrixWorld).project(camera);
-    return [(s.x + 1) / 2 * window.innerWidth, (1 - s.y) / 2 * window.innerHeight];
-  };
+  const onScreen = p => projected(p.clone().applyMatrix4(shown.matrixWorld));
+  // and for tools/drops3d.cjs, each new piece's offset (LDU, its sub-model's frame) from its place and its
+  // middle on the screen as it moves, and how many pieces are still moving
+  const pieces = shown.children.filter(c => c.userData.unit >= 0).map(c => {
+    const off = c.position.clone().sub(c.userData.rest);
+    const box = new THREE.Box3().setFromObject(c);
+    return [c.userData.index, off.x, off.y, off.z, ...projected(box.getCenter(new THREE.Vector3()))];
+  });
   return { t: now, picture: onStage, middle: onScreen(shown.userData.middle), older: onScreen(shown.userData.older),
-    opacity: Number(canvas.style.opacity || 1), change: change?.kind ?? null };
+    opacity: Number(canvas.style.opacity || 1), change: change?.kind ?? null, pieces, moving: moves.length };
+}
+
+function projected(world) {
+  // a point of the world on the screen, CSS px
+  const s = world.clone().project(camera);
+  return [(s.x + 1) / 2 * window.innerWidth, (1 - s.y) / 2 * window.innerHeight];
 }
 
 function resize() {
