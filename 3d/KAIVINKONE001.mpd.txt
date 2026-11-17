@@ -1,21 +1,20 @@
 0 FILE excavator.ldr
-0 !COLOUR Black                                                 CODE   0   VALUE #2C2C2C   EDGE #B9B9B9
-0 !COLOUR Blue                                                  CODE   1   VALUE #1E5AA8   EDGE #000000
-0 !COLOUR Yellow                                                CODE  14   VALUE #FAC80A   EDGE #000000
-0 !COLOUR White                                                 CODE  15   VALUE #F4F4F4   EDGE #000000
-0 !COLOUR Main_Colour                                           CODE  16   VALUE #FFFF80   EDGE #000000
-0 !COLOUR Edge_Colour                                           CODE  24   VALUE #7F7F7F   EDGE #000000
-0 !COLOUR Lime                                                  CODE  27   VALUE #A5CA18   EDGE #000000
-0 !COLOUR Trans_Clear                                           CODE  47   VALUE #FCFCFC   EDGE #000000   ALPHA 128
-0 !COLOUR Trans_Orange                                          CODE  57   VALUE #F08F1C   EDGE #000000   ALPHA 128
-0 !COLOUR Light_Bluish_Grey                                     CODE  71   VALUE #969696   EDGE #000000
-0 !COLOUR Dark_Bluish_Grey                                      CODE  72   VALUE #646464   EDGE #000000
-0 !COLOUR Medium_Nougat                                         CODE  84   VALUE #AA7D55   EDGE #000000
-0 !COLOUR Very_Light_Bluish_Grey                                CODE 151   VALUE #C8C8C8   EDGE #000000
-0 !COLOUR Dark_Blue                                             CODE 272   VALUE #19325A   EDGE #000000
-0 !COLOUR Neon_Yellow                                           CODE 368   VALUE #EDFF21   EDGE #000000
-0 !COLOUR Reddish_Orange                                        CODE   402   VALUE #CA4C0B   EDGE #000000
-0 !COLOUR Colour_4242 CODE 4242 VALUE #101010 EDGE #000000
+0 !COLOUR Black                                                 CODE   0   VALUE #1B2A34   EDGE #808080
+0 !COLOUR Blue                                                  CODE   1   VALUE #1E5AA8   EDGE #333333
+0 !COLOUR Yellow                                                CODE  14   VALUE #FAC80A   EDGE #333333
+0 !COLOUR White                                                 CODE  15   VALUE #F4F4F4   EDGE #333333
+0 !COLOUR Main_Colour                                           CODE  16   VALUE #FFFF80   EDGE #333333
+0 !COLOUR Edge_Colour                                           CODE  24   VALUE #7F7F7F   EDGE #333333
+0 !COLOUR Lime                                                  CODE  27   VALUE #A5CA18   EDGE #333333
+0 !COLOUR Trans_Clear                                           CODE  47   VALUE #FCFCFC   EDGE #C9C9C9   ALPHA 128
+0 !COLOUR Trans_Orange                                          CODE  57   VALUE #F08F1C   EDGE #9E5C0A   ALPHA 128
+0 !COLOUR Light_Bluish_Grey                                     CODE  71   VALUE #969696   EDGE #333333
+0 !COLOUR Dark_Bluish_Grey                                      CODE  72   VALUE #646464   EDGE #333333
+0 !COLOUR Medium_Nougat                                         CODE  84   VALUE #AA7D55   EDGE #333333
+0 !COLOUR Very_Light_Bluish_Grey                                CODE 151   VALUE #C8C8C8   EDGE #333333
+0 !COLOUR Dark_Blue                                             CODE 272   VALUE #19325A   EDGE #333333
+0 !COLOUR Neon_Yellow                                           CODE 368   VALUE #EDFF21   EDGE #333333
+0 !COLOUR Reddish_Orange                                        CODE   402   VALUE #CA4C0B   EDGE #333333
 0 Excavator
 0 Name: excavator.ldr
 0 Author: Claude
@@ -17458,7 +17457,7 @@
 0 Name: stud.dat
 0 Author: James Jessiman
 0 !LDRAW_ORG Primitive UPDATE 2012-01
-0 !LICENSE Redistributable under CCAL version 2.0 : see CAreadme.txt
+0 !LICENSE Licensed under CC BY 4.0 : see CAreadme.txt
 
 0 BFC CERTIFY CCW
 
@@ -17469,9 +17468,10 @@
 0 !HISTORY 2012-02-16 [Philo] Changed to CCW
 0 !HISTORY 2012-03-30 [PTadmin] Official Update 2012-01
 
+
 1 16 0 0 0 6 0 0 0 1 0 0 0 6 4-4edge.dat
 1 16 0 -4 0 6 0 0 0 1 0 0 0 6 4-4edge.dat
-1 4242 0 0 0 6 0 0 0 -4 0 0 0 6 4-4cyli.dat
+1 16 0 0 0 6 0 0 0 -4 0 0 0 6 4-4cyli.dat
 1 16 0 -4 0 6 0 0 0 1 0 0 0 6 4-4disc.dat
 
 0 FILE stud18a.dat
@@ -17961,7 +17961,7 @@
 0 Name: stud2.dat
 0 Author: James Jessiman
 0 !LDRAW_ORG Primitive UPDATE 2009-02
-0 !LICENSE Redistributable under CCAL version 2.0 : see CAreadme.txt
+0 !LICENSE Licensed under CC BY 4.0 : see CAreadme.txt
 
 0 BFC CERTIFY CCW
 
@@ -17973,13 +17973,14 @@
 0 !HISTORY 2009-06-21 [cwdee] Update ring references to 4-4ring
 0 !HISTORY 2009-09-03 [PTadmin] Official Update 2009-02
 
+
 1 16 0 0 0 4 0 0 0 1 0 0 0 4 4-4edge.dat
 1 16 0 0 0 6 0 0 0 1 0 0 0 6 4-4edge.dat
 1 16 0 -4 0 4 0 0 0 1 0 0 0 4 4-4edge.dat
 1 16 0 -4 0 6 0 0 0 1 0 0 0 6 4-4edge.dat
 0 BFC INVERTNEXT
-1 4242 0 -4 0 4 0 0 0 4 0 0 0 4 4-4cyli.dat
-1 4242 0 -4 0 6 0 0 0 4 0 0 0 6 4-4cyli.dat
+1 16 0 -4 0 4 0 0 0 4 0 0 0 4 4-4cyli.dat
+1 16 0 -4 0 6 0 0 0 4 0 0 0 6 4-4cyli.dat
 1 16 0 -4 0 2 0 0 0 1 0 0 0 2 4-4ring2.dat
 0
 
@@ -17988,7 +17989,7 @@
 0 Name: stud2a.dat
 0 Author: James Jessiman
 0 !LDRAW_ORG Primitive UPDATE 2009-02
-0 !LICENSE Redistributable under CCAL version 2.0 : see CAreadme.txt
+0 !LICENSE Licensed under CC BY 4.0 : see CAreadme.txt
 
 0 BFC CERTIFY CCW
 
@@ -18000,11 +18001,12 @@
 0 !HISTORY 2009-06-21 [cwdee] Update ring references to 4-4ring
 0 !HISTORY 2009-09-03 [PTadmin] Official Update 2009-02
 
+
 1 16 0 -4 0 4 0 0 0 1 0 0 0 4 4-4edge.dat
 1 16 0 -4 0 6 0 0 0 1 0 0 0 6 4-4edge.dat
 0 BFC INVERTNEXT
-1 4242 0 -4 0 4 0 0 0 4 0 0 0 4 4-4cyli.dat
-1 4242 0 -4 0 6 0 0 0 4 0 0 0 6 4-4cyli.dat
+1 16 0 -4 0 4 0 0 0 4 0 0 0 4 4-4cyli.dat
+1 16 0 -4 0 6 0 0 0 4 0 0 0 6 4-4cyli.dat
 1 16 0 -4 0 2 0 0 0 1 0 0 0 2 4-4ring2.dat
 0
 
@@ -18013,7 +18015,7 @@
 0 Name: stud3.dat
 0 Author: James Jessiman
 0 !LDRAW_ORG Primitive UPDATE 2012-01
-0 !LICENSE Redistributable under CCAL version 2.0 : see CAreadme.txt
+0 !LICENSE Licensed under CC BY 4.0 : see CAreadme.txt
 
 0 BFC CERTIFY CCW
 
@@ -18024,17 +18026,18 @@
 0 !HISTORY 2012-02-16 [Philo] Changed to CCW
 0 !HISTORY 2012-03-30 [PTadmin] Official Update 2012-01
 
+
 1 16 0 -4 0 4 0 0 0 1 0 0 0 4 4-4edge.dat
 1 16 0 0 0 4 0 0 0 1 0 0 0 4 4-4edge.dat
 1 16 0 -4 0 4 0 0 0 1 0 0 0 4 4-4disc.dat
-1 4242 0 -4 0 4 0 0 0 4 0 0 0 4 4-4cyli.dat
+1 16 0 -4 0 4 0 0 0 4 0 0 0 4 4-4cyli.dat
 
 0 FILE stud4.dat
 0 Stud Tube Open
 0 Name: stud4.dat
 0 Author: James Jessiman
 0 !LDRAW_ORG Primitive UPDATE 2009-02
-0 !LICENSE Redistributable under CCAL version 2.0 : see CAreadme.txt
+0 !LICENSE Licensed under CC BY 4.0 : see CAreadme.txt
 
 0 BFC CERTIFY CCW
 
@@ -18046,12 +18049,13 @@
 0 !HISTORY 2009-06-21 [cwdee] Update ring references to 4-4ring
 0 !HISTORY 2009-09-03 [PTadmin] Official Update 2009-02
 
+
 1 16 0 -4 0 6 0 0 0 1 0 0 0 6 4-4edge.dat
 1 16 0 -4 0 8 0 0 0 1 0 0 0 8 4-4edge.dat
 1 16 0 0 0 6 0 0 0 1 0 0 0 6 4-4edge.dat
 1 16 0 0 0 8 0 0 0 1 0 0 0 8 4-4edge.dat
 0 BFC INVERTNEXT
-1 4242 0 -4 0 6 0 0 0 4 0 0 0 6 4-4cyli.dat
+1 16 0 -4 0 6 0 0 0 4 0 0 0 6 4-4cyli.dat
 1 16 0 -4 0 8 0 0 0 4 0 0 0 8 4-4cyli.dat
 1 16 0 -4 0 2 0 0 0 1 0 0 0 2 4-4ring3.dat
 0

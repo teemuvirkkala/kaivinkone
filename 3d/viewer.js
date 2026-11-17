@@ -11,11 +11,10 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { LDrawLoader } from 'three/addons/loaders/LDrawLoader.js';
 import { LDrawConditionalLineMaterial } from 'three/addons/materials/LDrawConditionalLineMaterial.js';
-import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { lockState } from '../lock.js';
-import { asBooklet, curves, isGlass, setLines } from './look.js';
+import { asGloss, isGlass, lightUp, setCamera, setLook, setRims } from './look.js';
 import { drawOutline, prepare, setOutline } from './outline.js';
-import { showTimes } from './ajat.js';
+import { gpuTimer, showTimes } from './ajat.js';
 
 const DROP_LDU = 72;         // a new piece not drawn apart starts this far above its place, three bricks
 const HOLD_MS = 700;         // a picture stays as the page draws it this long before its pieces move
@@ -34,16 +33,12 @@ const $ = id => document.getElementById(id);
 // Each phase's end as a performance mark, '3d:' and its name, which tools/time3d.cjs reads (#219)
 const mark = name => performance.mark(`3d:${name}`);
 const canvas = $('view');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, preserveDrawingBuffer: SHOT });
+// a stencil, where each piece's rims may go (look.js)
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, stencil: true, preserveDrawingBuffer: SHOT });
 renderer.setPixelRatio(SHOT ? 1 : Math.min(window.devicePixelRatio, 2));
-renderer.toneMapping = THREE.NeutralToneMapping;
 if (SHOT) document.body.classList.add('shot');
 
 const scene = new THREE.Scene();
-scene.environmentIntensity = 0.9;
-const sun = new THREE.DirectionalLight(0xffffff, 1.4);
-sun.position.set(0.5, 1, 0.8);
-scene.add(sun);
 
 // The booklet's cameras are orthographic (renderer/src/render.rs): a picture sees the fov's arc at the target
 const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, -20000, 20000);
@@ -88,41 +83,6 @@ function ldrawText(pic) {
   return `0 Picture\n${data.colours}${lines.join('\n')}\n`;
 }
 
-// The pieces are drawn in the booklet's colours (NUMBER.json's colours, ldrender's LEGO palette) with its
-// high-contrast studs; the figure keeps LDConfig's (figure.colours), as the page lights it as LEGO's booklets shade
-// theirs. A colour LDConfig hasn't got, the studs' sides, is the figure piece's own, as the library's studs draw it.
-function asFigure(pieces) {
-  // pieces: [[object, its colour code]]. Each material is copied once a colour, in the order the loader made them:
-  // three.js draws opaque faces in its materials' order where they lie on one another, as a print on its piece
-  const uses = [];
-  for (const [piece, part] of pieces) {
-    piece.traverse(o => {
-      if (o.material) [o.material].flat().forEach((m, k) => uses.push({ o, k, m, part }));
-    });
-  }
-  const copies = new Map();
-  for (const { m, part } of [...uses].sort((a, b) => a.m.id - b.m.id)) {
-    const key = `${m.id} ${part}`;
-    if (copies.has(key)) continue;
-    const [value, edge] = data.figure.colours[m.userData.code] ?? data.figure.colours[part];
-    const own = m.clone();
-    own.color.setStyle(m.isMeshStandardMaterial ? value : edge, THREE.SRGBColorSpace);
-    copies.set(key, own);
-  }
-  for (const { o, k, m, part } of uses) {
-    const own = copies.get(`${m.id} ${part}`);
-    if (Array.isArray(o.material)) o.material[k] = own;
-    else o.material = own;
-  }
-}
-
-function lightFigure() {
-  // the room the figure's pieces reflect (the others are unlit: look.js), built when a picture first has them (#219)
-  if (scene.environment) return;
-  scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
-  mark('environment');
-}
-
 function picture(i) {
   if (!built.has(i)) {
     const pic = data.steps[i];
@@ -131,10 +91,8 @@ function picture(i) {
         reject(new Error(`picture ${i + 1}: ${group.children.length} of ${pic.parts.length} pieces loaded`));
         return;
       }
-      const figure = group.children.map((child, n) => [child, pic.parts[n]]).filter(([, [file]]) => data.figure.parts.includes(file));
-      if (figure.length) lightFigure();
-      asFigure(figure.map(([child, [, colour]]) => [child, colour]));
-      group.children.filter(child => !figure.some(([f]) => f === child)).forEach(asBooklet);
+      const tyres = new Set(data.look.tyres);
+      group.children.forEach((child, n) => asGloss(child, n, tyres.has(pic.parts[n][0].toLowerCase())));
       group.children.forEach((child, n) => {
         const [, , , unit, lift] = pic.parts[n];
         child.userData.unit = unit;
@@ -176,6 +134,7 @@ async function load(number, files = window.setFiles(number), open = Promise.reso
   fresh.partsCache.parseCache.parse(text);
   mark('parsed');
   data = json;
+  setLook(data.look);
   loader = fresh;
   built.clear();
   stage.clear();
@@ -272,12 +231,12 @@ function frustum(v) {
   camera.left = -u.w / 2 * s; camera.right = u.w / 2 * s;
   camera.top = mid * s; camera.bottom = -(u.h - mid) * s;
   camera.updateProjectionMatrix();
-  // the booklet's line width (NUMBER.json's line, px of a picture) the same share of the picture: px on the screen,
-  // which the reader's zoom leaves as they are
+  // the rims' width (NUMBER.json's look.rim, px of a picture) the same share of the picture as on paper: px on the
+  // screen, which the reader's zoom leaves as they are
   if (!data) return;
   const k = v.perPx / s * renderer.getPixelRatio();   // device px a picture's px
   const buffer = renderer.getDrawingBufferSize(new THREE.Vector2());
-  setLines(data.line * k, buffer);
+  setRims(data.look.rim * k, buffer);
   setOutline(data.outline, k, buffer);
 }
 
@@ -440,7 +399,14 @@ function tick(now) {
   });
   if (change) advance(change, now);
   else controls.update();
-  renderer.render(scene, camera);
+  setCamera(camera);
+  if (timer) {
+    timer.time('valo', () => lightUp(renderer, scene, camera, shown));
+    timer.time('kuva', () => renderer.render(scene, camera));
+  } else {
+    lightUp(renderer, scene, camera, shown);
+    renderer.render(scene, camera);
+  }
   drawOutline(renderer, scene, camera, shown, Math.min(1, 1 - (now - outlineFades) / FADE_MS));
   if (drawn >= 0) { mark(`shown ${drawn + 1}`); drawn = -1; }
   if (Array.isArray(window.track) && shown) window.track.push(tracked(now));
@@ -467,8 +433,7 @@ function resize() {
 // tools/compare3d.py: picture i as its page draws it, filling the window (sized as the picture), on nothing. mode
 // 'all': as the page draws it, its new pieces outlined; 'new': only where its new pieces show, glass too, drawn whole,
 // the older ones hiding what is behind them but drawn in nothing, older glass not (as the booklet's key: ADR-0066); 'ids': each piece's faces in one unlit colour that numbers it (idColour()),
-// without lines; 'curves': white where a face is curved, black where flat, without lines (look.js curves); 'outline':
-// the outline alone (outline.js)
+// without rims; 'outline': the outline alone (outline.js)
 const hidden = new THREE.MeshBasicMaterial({ colorWrite: false });
 const whole = new THREE.MeshBasicMaterial({ toneMapped: false });
 const ID_LEVELS = 16;    // levels a channel of an id colour takes, 255 / 15 apart: far apart enough to survive rounding
@@ -486,7 +451,7 @@ function shotLook(group, mode) {
   group.children.forEach((child, n) => {
     if (mode === 'all' || mode === 'outline') return;
     const isNew = mode === 'new' && child.userData.unit >= 0;
-    const id = { ids: () => new THREE.MeshBasicMaterial({ color: idColour(n), toneMapped: false }), curves: () => curves,
+    const id = { ids: () => new THREE.MeshBasicMaterial({ color: idColour(n), toneMapped: false }),
       new: () => (isNew ? whole : hidden) }[mode]();
     child.traverse(o => {
       if (!o.material) return;
@@ -512,6 +477,8 @@ window.shot = async (i, mode = 'all') => {
   resize();
   place(bookletView(data.steps[i]));
   controls.update();
+  setCamera(camera);
+  lightUp(renderer, scene, camera, group);
   renderer.render(scene, camera);
   if (mode === 'outline') renderer.clear();
   if (mode === 'all' || mode === 'outline') drawOutline(renderer, scene, camera, group, 1);
@@ -566,6 +533,8 @@ async function start() {
 }
 
 resize();
+// ?ajat: the timings on the screen, the GPU's too where the browser times it
+const timer = !SHOT && new URLSearchParams(location.search).has('ajat') ? gpuTimer(renderer.getContext()) : null;
 if (!SHOT && new URLSearchParams(location.search).has('ajat')) showTimes();
 if (!SHOT) requestAnimationFrame(tick);
 start().catch(fail);
