@@ -1,231 +1,486 @@
-// The booklet's look on the 3D page (ADR-0065): every piece but the figure's drawn as renderer/src/render.rs draws the
-// LEGO look. Its faces unlit in their colour, a curved surface shaded by how far its smooth normal turns from the
-// surface's mean (a flat face stays its colour exactly, as LEGO's booklets draw it: 6617226); the faces pushed back behind the
-// lines a line's width; and lines a set number of screen pixels wide, which WebGL's own lines can't be (LineMaterial),
-// a conditional line drawn only where the outline of its curve is, as LDrawConditionalLineMaterial tests it.
+// The cover's gloss look on the 3D page (ADR-0069), as renderer/src/gloss.rs lights it: a soft key light from behind the
+// camera, up and to its left, which follows the camera as the reader turns the model; the sky and the ground's fill;
+// the studio round the model mirrored, more the more a face is seen edge on; the key light box's highlight (GGX); and
+// the brightness rolled off as the renderer's tone curve does. No dark lines: an edge between faces at an angle is a
+// rim, a soft band lit as a small rounded bevel catches the light (gloss.rs Lights::rim, mesh.rs rims()), drawn only
+// on its own piece. Glass filters what is behind it and adds its reflections. The constants are ldrender's
+// (NUMBER.json's look.gloss, `ldrender --gloss`). The model's shadow on itself and the occlusion of nearby pieces come
+// from light.js (ADR-0070).
 import * as THREE from 'three';
 import { LineSegments2 } from 'three/addons/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
+import { SOLID, glsl as lightGlsl, setLight, uniforms as lightUniforms, updateLight } from './light.js';
 
-// A curved face's colour is its own plus CURVE_LEVELS (of 255, each channel, whatever its colour) times how much more
-// (or less) of the light its smooth normal takes than its surface's on average (reference()): LEGO's (6617226) curved
-// surfaces rise 5 to 25 levels across, flat faces under 2; the most turned of ours, a cylinder's side, rises 25 (ADR-0065)
-const CURVE_LEVELS = 23;
-const LIGHT = new THREE.Vector3(-0.4, 0.8, 0.45).normalize();   // from the eye, up and left, as LEGO's booklets light
-const OFFSET_WIDTHS = 1.0;   // faces are pushed back by their depth across this many line widths (render.rs)
+const OFFSET_WIDTHS = 1.0;   // faces are pushed back by their depth across this many rim widths, so a rim lies on them
 const OFFSET_UNITS = 1.0;    // and this many of the depth buffer's steps, so a face square to the eye lies behind too
-const GLASS_OFFSET = [0.25, 0.1];   // glass's factor and units instead, as render.rs's TRANSLUCENT_OFFSET
-const LINE_ORDER = 1;        // lines are drawn after the faces, which they lie on
+const RIM_ORDER = 1;         // rims are drawn after the faces, which they lie on
+const GLASS_ADD_ORDER = 2;   // glass's reflections are added after what it filters
+const PIECE_IDS = 255;       // the stencil's values: a rim is drawn where its own piece is, its id one of these
+const WELD = 0.01;           // LDU: corners closer than this are one (mesh.rs WELD)
+const SAME_FACE = 0.999;     // two normals closer than this cosine are one face beside a line (mesh.rs SAME_FACE)
+const SMOOTH_COS = 0.707;    // faces meeting less sharply than this are one smooth surface, no rim (mesh.rs SMOOTH_COS)
+const CELL = 20.0;           // LDU: the grid cells a part's triangles are found by (mesh.rs CELL)
 
-const faces = new Map();     // a loader's face material -> its booklet look
-const lines = new Map();     // a loader's edge material (and whether conditional) -> its LineMaterial
-const wides = new WeakMap(); // a part's line geometry, which its copies in every picture share -> its wide ones (#219)
-let widthPx = 1;             // the lines' width, device px
+let look = null;             // NUMBER.json's look
+let shared = null;           // the GLSL and uniforms every material shares, made from the look (setLook())
+let widthPx = 1;             // a rim's width, device px
 const resolution = new THREE.Vector2(1, 1);   // the drawing buffer's size, px
+const faces = new Map();     // a loader's face material and the finish -> its gloss materials
+const rimLooks = new Map();  // a rim's colour and finish -> its material
+const rimSets = new WeakMap();   // a part's face geometry -> its rims, by the material index of the face they take
 
-// A colour's sRGB values, which the faces are drawn in as they are: the shading is in the page's levels, as LEGO's
-// was measured, and a flat face's pixels are its colour exactly (the renderer's output is sRGB)
-function srgb(color) {
-  const out = {};
-  color.getRGB(out, THREE.SRGBColorSpace);
-  return new THREE.Vector3(out.r, out.g, out.b);
+const vec3 = v => `vec3(${v.map(x => x.toFixed(6)).join(', ')})`;
+
+// The GLSL of gloss.rs: lit() is Lights::light_reflecting() plus its reflections, encode() its encode(); in view space,
+// where an orthographic camera's eye is along +z
+function chunk(g) {
+  return /* glsl */`
+  uniform vec3 keyDir;
+  uniform vec3 upDir;
+  const vec3 TO_EYE = vec3(0.0, 0.0, 1.0);
+  const float PI = 3.141592653589793;
+  const float WRAP = ${g.wrap.toFixed(6)};
+  const float KEY = ${g.key.toFixed(6)};
+  const vec3 SKY = ${vec3(g.sky)};
+  const vec3 GROUND = ${vec3(g.ground)};
+  const float WHITE = ${g.white.toFixed(6)};
+  const float SHOULDER = ${g.shoulder.toFixed(6)};
+  const float KEY_SPECULAR = ${g.keySpecular.toFixed(6)};
+  const float KEY_SIZE = ${g.keySize.toFixed(6)};
+  const vec3 SURROUND_ABOVE = ${vec3(g.surroundAbove)};
+  const vec3 SURROUND_BELOW = ${vec3(g.surroundBelow)};
+  const float SQUARE_ON = ${g.squareOn.toFixed(6)};
+  const float GRAZING = ${g.grazing.toExponential(6)};
+  const float FACES_CROSSED = ${g.facesCrossed.toFixed(6)};
+  const float SHADOW_FADE = ${g.shadowFade.toFixed(6)};
+  ${lightGlsl(g.occlusion)}
+  #define ARC_STEPS ${g.arcSteps}
+
+  float lum709(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }   // Rec. 709's, of linear light
+  float toSrgb(float v) { return v <= 0.0031308 ? v * 12.92 : 1.055 * pow(v, 1.0 / 2.4) - 0.055; }   // IEC 61966-2-1
+  vec3 toSrgb(vec3 v) { return vec3(toSrgb(v.r), toSrgb(v.g), toSrgb(v.b)); }
+  float tone(float x) { x = clamp(x, 0.0, WHITE); return x * (WHITE + SHOULDER) / (WHITE * (x + SHOULDER)); }
+
+  vec3 encode(vec3 lit) {
+    float y = lum709(lit);
+    vec3 toned = lit * (y > 0.0 ? tone(y) / y : 0.0);
+    float ty = tone(y);
+    float top = max(toned.r, max(toned.g, toned.b));
+    float towardsGrey = top > 1.0 ? (1.0 - ty) / (top - ty) : 1.0;
+    return toSrgb(clamp(ty + (toned - ty) * towardsGrey, 0.0, 1.0));
+  }
+
+  // the surround mirrored, the key box's highlight, and how much light gets through to the colour (gloss.rs specular())
+  void specular(vec3 n, float rough, out vec3 surround, out float highlight, out float through) {
+    float nv = max(dot(n, TO_EYE), GRAZING);
+    float fresnel = SQUARE_ON + (max(1.0 - rough, SQUARE_ON) - SQUARE_ON) * pow(1.0 - nv, 5.0);
+    vec3 mirror = n * 2.0 * nv - TO_EYE;
+    surround = fresnel * mix(SURROUND_BELOW, SURROUND_ABOVE, (dot(mirror, upDir) + 1.0) / 2.0);
+    float wide = min(rough * rough + KEY_SIZE, 1.0);
+    float nl = dot(n, keyDir);
+    highlight = 0.0;
+    if (nl > 0.0) {
+      vec3 h = normalize(keyDir + TO_EYE);
+      float nh = max(dot(n, h), 0.0);
+      float a2 = wide * wide;
+      float d = a2 / (PI * pow(nh * nh * (a2 - 1.0) + 1.0, 2.0));
+      float k = wide / 2.0;
+      float g = nl / (nl * (1.0 - k) + k) * nv / (nv * (1.0 - k) + k);
+      float f = SQUARE_ON + (1.0 - SQUARE_ON) * pow(1.0 - max(dot(keyDir, h), 0.0), 5.0);
+      highlight = KEY_SPECULAR * d * g * f / (4.0 * nv);
+    }
+    through = 1.0 - fresnel;
+  }
+
+  // the light a surface of linear colour base with unit normal n sends to the eye, reflecting the studio as given:
+  // open the share of the sky and key it sees past nearby pieces, seen the share of the key box past the model (gloss.rs
+  // Lit::encoded()); a face turned from the key keeps its wrapped light whatever the shadow says
+  vec3 litReflecting(vec3 base, vec3 n, vec3 surround, float through, float rough, float open, float seen) {
+    vec3 s; float highlight, t;
+    specular(n, rough, s, highlight, t);
+    float towards = dot(n, keyDir);
+    float key = KEY * max((towards + WRAP) / (1.0 + WRAP), 0.0);
+    float unshadowed = 1.0 - clamp(towards / SHADOW_FADE, 0.0, 1.0);
+    float keyed = unshadowed + (1.0 - unshadowed) * seen;
+    vec3 fill = through * base * mix(GROUND, SKY, (dot(n, upDir) + 1.0) / 2.0);
+    return surround + keyed * highlight + open * (fill + keyed * through * base * key);
+  }
+
+  vec3 lit(vec3 base, vec3 n, float rough, float open, float seen) {
+    vec3 surround; float highlight, through;
+    specular(n, rough, surround, highlight, through);
+    return litReflecting(base, n, surround, through, rough, open, seen);
+  }`;
 }
 
-const QUANTUM = 100;   // a corner's place (LDU) and normal are compared rounded to a hundredth
-// The faces' vertex shader: the smooth normal, and the view position the fragment shader finds the face's normal from
+// The faces' vertex shader: the smooth normal and the view position, which the face's own normal is found from
 const FACE_VERTEX = /* glsl */`
-  attribute vec3 reference;
   varying vec3 vNormal;
-  varying vec3 vReference;
-  varying vec3 vViewPosition;
+  varying vec3 vView;
   void main() {
-    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
     vNormal = normalMatrix * normal;
-    vReference = normalMatrix * reference;
-    vViewPosition = -mvPosition.xyz;
-    gl_Position = projectionMatrix * mvPosition;
+    vView = mv.xyz;
+    gl_Position = projectionMatrix * mv;
   }`;
 
-function surfaces(pos, nor) {
-  // the surface (a triangle's index) each triangle is on: triangles joined by edges whose corners share their smooth
-  // normals, as the loader smooths across an edge without a line
-  const tris = pos.length / 9;
-  const parent = Int32Array.from({ length: tris }, (_, t) => t);
-  const root = t => { while (parent[t] !== t) t = parent[t] = parent[parent[t]]; return t; };
-  const corner = v => Array.from({ length: 6 }, (_, k) => Math.round((k < 3 ? pos : nor)[v * 3 + k % 3] * QUANTUM)).join(',');
-  const edges = new Map();
-  for (let t = 0; t < tris; t++) {
-    const keys = [0, 1, 2].map(k => corner(t * 3 + k));
-    for (const [a, b] of [[0, 1], [1, 2], [2, 0]]) {
-      const edge = keys[a] < keys[b] ? `${keys[a]}|${keys[b]}` : `${keys[b]}|${keys[a]}`;
-      if (edges.has(edge)) parent[root(t)] = root(edges.get(edge));
-      else edges.set(edge, t);
-    }
-  }
-  return Array.from({ length: tris }, (_, t) => root(t));
+// The normal turned to the side of its face the eye sees (gloss.rs facing(): LDraw's windings can't always be trusted)
+const FACING = /* glsl */`
+  varying vec3 vNormal;
+  varying vec3 vView;
+  vec3 facing() {
+    vec3 face = normalize(cross(dFdx(vView), dFdy(vView)));
+    if (dot(face, TO_EYE) < 0.0) face = -face;
+    vec3 n = normalize(vNormal);
+    return dot(n, face) < 0.0 ? -n : n;
+  }`;
+
+// Sets the look (NUMBER.json's): the materials are made from it
+export function setLook(given) {
+  if (shared && JSON.stringify(given.gloss) === JSON.stringify(look.gloss)) { look = given; return; }
+  look = given;
+  setLight(given.gloss);
+  shared = { glsl: chunk(given.gloss), keyDir: { value: new THREE.Vector3(0, 0, 1) }, upDir: { value: new THREE.Vector3(0, 1, 0) } };
+  faces.clear();
+  rimLooks.clear();
 }
 
-function reference(geometry) {
-  // Each corner's surface's mean normal (area-weighted, not unit length). A flat face's is its own normal, so it stays
-  // its colour; a curved surface's is its middle's, so it is shaded across its whole width, not facet by facet (a ramp
-  // a facet would stripe a cylinder), and its colour on average is its own
-  const pos = geometry.attributes.position.array, nor = geometry.attributes.normal.array;
-  const surface = surfaces(pos, nor);
-  const sums = new Map();
-  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
-  for (let t = 0; t < surface.length; t++) {
-    a.fromArray(pos, t * 9); b.fromArray(pos, t * 9 + 3); c.fromArray(pos, t * 9 + 6);
-    const n = b.sub(a).cross(c.sub(a));   // the face's normal, its length twice its area
-    if (n.dot(new THREE.Vector3().fromArray(nor, t * 9)) < 0) n.negate();
-    const sum = sums.get(surface[t]) ?? sums.set(surface[t], new THREE.Vector4()).get(surface[t]);
-    sum.x += n.x; sum.y += n.y; sum.z += n.z; sum.w += n.length();
-  }
-  const out = new Float32Array(pos.length);
-  for (let t = 0; t < surface.length; t++) {
-    const sum = sums.get(surface[t]);
-    for (let k = 0; k < 3; k++) out.set([sum.x / sum.w, sum.y / sum.w, sum.z / sum.w], (t * 3 + k) * 3);
-  }
-  geometry.setAttribute('reference', new THREE.BufferAttribute(out, 3));
+function finish(m, tyre) {
+  // a material's roughness by its finish: glass and rubber by the colour's LDConfig name, a tyre rubber whatever its colour
+  if (tyre || m.name.startsWith(look.gloss.rubber)) return look.roughness.rubber;
+  if (m.name.startsWith(look.gloss.glass)) return look.roughness.glass;
+  return look.roughness.plastic;
 }
 
-function faceMaterial(m) {
-  if (!faces.has(m)) {
-    const look = new THREE.ShaderMaterial({
-      uniforms: { diffuse: { value: srgb(m.color) }, opacity: { value: m.opacity }, light: { value: LIGHT },
-        gain: { value: CURVE_LEVELS / 255 } },
-      vertexShader: FACE_VERTEX,
-      fragmentShader: /* glsl */`
-        uniform vec3 diffuse;
-        uniform float opacity;
-        uniform vec3 light;
-        uniform float gain;
-        varying vec3 vNormal;
-        varying vec3 vReference;
-        varying vec3 vViewPosition;
-        void main() {
-          // the normals as the side seen faces, whichever way the part's triangles wind
-          vec3 face = normalize(cross(dFdx(vViewPosition), dFdy(vViewPosition)));
-          float seen = dot(vNormal, face) < 0.0 ? -1.0 : 1.0;
-          float more = seen * (dot(light, normalize(vNormal)) - dot(light, vReference));
-          gl_FragColor = vec4(clamp(diffuse + gain * more, 0.0, 1.0), opacity);
-        }`,
-      transparent: m.transparent, depthWrite: m.depthWrite, side: m.side, toneMapped: false,
-      polygonOffset: true, polygonOffsetFactor: m.transparent ? GLASS_OFFSET[0] : OFFSET_WIDTHS * widthPx,
-      polygonOffsetUnits: m.transparent ? GLASS_OFFSET[1] : OFFSET_UNITS,
-    });
-    look.userData = { ...m.userData, booklet: true };
-    faces.set(m, look);
-  }
-  return faces.get(m);
+function uniforms(m, rough) {
+  return { base: { value: new THREE.Vector3(m.color.r, m.color.g, m.color.b) }, rough: { value: rough },
+    keyDir: shared.keyDir, upDir: shared.upDir, ...lightUniforms };
 }
 
-// LineMaterial's vertex shader, with the conditional line's test: both control points on the same side of the line,
-// on the screen, or the line's quad collapses to nothing (renderer/src/render.rs conditional(), which draws on 0 too):
-// every corner of it at one point past the far plane (z 2 > w 1), which clipping drops
-function conditional(material) {
-  material.vertexShader = material.vertexShader
-    .replace('attribute vec3 instanceEnd;', 'attribute vec3 instanceEnd;\nattribute vec3 instanceControl0;\nattribute vec3 instanceControl1;')
-    .replace('gl_Position = clip;', `gl_Position = clip;
-      vec4 q0 = projectionMatrix * modelViewMatrix * vec4(instanceControl0, 1.0);
-      vec4 q1 = projectionMatrix * modelViewMatrix * vec4(instanceControl1, 1.0);
-      vec2 along = ndcEnd.xy - ndcStart.xy;
-      vec2 across = vec2(-along.y, along.x);
-      if (dot(across, q0.xy / q0.w - ndcStart.xy) * dot(across, q1.xy / q1.w - ndcStart.xy) < 0.0) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);`);
+function opaque(m, rough) {
+  const material = new THREE.ShaderMaterial({
+    uniforms: uniforms(m, rough), vertexShader: FACE_VERTEX,
+    fragmentShader: `${shared.glsl}
+      ${FACING}
+      uniform vec3 base;
+      uniform float rough;
+      void main() {
+        vec3 n = facing();
+        gl_FragColor = vec4(encode(lit(base, n, rough, open(), shade())), 1.0);
+      }`,
+    side: m.side, toneMapped: false, polygonOffset: true, polygonOffsetFactor: OFFSET_WIDTHS * widthPx,
+    polygonOffsetUnits: OFFSET_UNITS,
+    // each piece's faces mark the stencil with its id (marked()), where its rims may go
+    stencilWrite: true, stencilFunc: THREE.AlwaysStencilFunc, stencilZPass: THREE.ReplaceStencilOp,
+  });
+  material.userData = { ...m.userData };
   return material;
 }
 
-function lineMaterial(m, isConditional) {
-  const key = `${m.id} ${isConditional}`;
-  if (!lines.has(key)) {
-    const look = new LineMaterial({ color: m.color, linewidth: widthPx, transparent: m.transparent, opacity: m.opacity,
-      toneMapped: false });
-    look.resolution = resolution;
-    look.userData = { ...m.userData, booklet: true };
-    lines.set(key, isConditional ? conditional(look) : look);
-  }
-  return lines.get(key);
+// Glass as a filter (gloss.rs glass()), in two passes: what is behind multiplied by what it lets through of its colour,
+// then its own reflections added. Over nothing it leaves the page showing through by as much as it lets through.
+function glass(m, rough) {
+  const pass = (name, out, blend) => {
+    const material = new THREE.ShaderMaterial({
+      uniforms: uniforms(m, rough), vertexShader: FACE_VERTEX,
+      fragmentShader: `${shared.glsl}
+        ${FACING}
+        uniform vec3 base;
+        uniform float rough;
+        void main() {
+          vec3 n = facing();
+          vec3 surround; float highlight, through;
+          specular(n, rough, surround, highlight, through);
+          vec3 filtered = through * pow(base, vec3(1.0 / FACES_CROSSED));
+          ${out}
+        }`,
+      side: THREE.DoubleSide, transparent: true, depthWrite: false, toneMapped: false,
+      blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, ...blend,
+    });
+    material.userData = { ...m.userData, glassPass: name };
+    return material;
+  };
+  return [
+    pass('filter', 'gl_FragColor = vec4(toSrgb(filtered), 1.0 - lum709(filtered));',
+      { blendSrc: THREE.ZeroFactor, blendDst: THREE.SrcColorFactor, blendSrcAlpha: THREE.OneFactor,
+        blendDstAlpha: THREE.OneMinusSrcAlphaFactor }),
+    pass('reflect', 'gl_FragColor = vec4(surround + highlight, 0.0);',
+      { blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor, blendSrcAlpha: THREE.ZeroFactor, blendDstAlpha: THREE.OneFactor }),
+  ];
 }
 
-function wideGeometries(segments) {
-  // a LineSegmentsGeometry for each material group of segments' geometry, as [geometry, its material index]
-  const g = segments.geometry, pos = g.attributes.position.array;
-  const groups = g.groups.length ? g.groups : [{ start: 0, count: g.attributes.position.count, materialIndex: 0 }];
-  return groups.map(({ start, count, materialIndex }) => {
-    const n = Math.min(count, g.attributes.position.count - start);
-    const geometry = new LineSegmentsGeometry().setPositions(pos.subarray(start * 3, (start + n) * 3));
-    if (segments.isConditionalLine) {
-      for (const [from, to] of [['control0', 'instanceControl0'], ['control1', 'instanceControl1']]) {
-        const all = g.attributes[from].array, one = new Float32Array(n / 2 * 3);
-        for (let s = 0; s < n / 2; s++) one.set(all.subarray((start + 2 * s) * 3, (start + 2 * s) * 3 + 3), s * 3);
-        geometry.setAttribute(to, new THREE.InstancedBufferAttribute(one, 3));
+function faceLook(m, tyre) {
+  const rough = finish(m, tyre);
+  const key = `${m.id} ${rough}`;
+  if (!faces.has(key)) faces.set(key, m.transparent ? glass(m, rough) : [opaque(m, rough)]);
+  return faces.get(key);
+}
+
+// ---------------------------------------------------------------------------------------------------- rims
+
+const weld = p => p.map(v => Math.round(v / WELD)).join(',');
+const sub = (a, b) => a.map((v, k) => v - b[k]);
+const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const unit = a => { const l = Math.hypot(...a) || 1; return a.map(v => v / l); };
+
+function onSegment(p, a, b) {
+  // whether p lies on the segment a-b, within WELD (mesh.rs on_segment())
+  const ab = sub(b, a), len2 = dot(ab, ab);
+  const t = len2 > 0 ? Math.min(1, Math.max(0, dot(sub(p, a), ab) / len2)) : 0;
+  return Math.hypot(...sub(p, a.map((v, k) => v + ab[k] * t))) < WELD;
+}
+
+function onFace(p, q, n) {
+  // whether p, in triangle q's plane (unit normal n), lies inside its edges, within WELD (mesh.rs on_face())
+  const side = (a, b) => dot(cross(sub(b, a), sub(p, a)), n) / Math.max(Math.hypot(...sub(b, a)), WELD);
+  const s = [side(q[0], q[1]), side(q[1], q[2]), side(q[2], q[0])];
+  return s.every(v => v >= -WELD) || s.every(v => v <= WELD);
+}
+
+function triangles(geometry) {
+  // [{q: corners, n: unit normal outward, as the loader's smooth normals say, group: its material index}]
+  const pos = geometry.attributes.position.array, nor = geometry.attributes.normal.array;
+  const groups = geometry.groups.length ? geometry.groups : [{ start: 0, count: pos.length / 3, materialIndex: 0 }];
+  const out = [];
+  for (const { start, count, materialIndex } of groups) {
+    const end = Math.min(start + count, pos.length / 3);   // a group's count may run past the vertices (Infinity)
+    for (let v = start; v + 2 < end; v += 3) {
+      const q = [0, 1, 2].map(k => Array.from(pos.subarray((v + k) * 3, (v + k) * 3 + 3)));
+      let n = unit(cross(sub(q[1], q[0]), sub(q[2], q[0])));
+      const sum = [0, 1, 2].map(k => nor[v * 3 + k] + nor[(v + 1) * 3 + k] + nor[(v + 2) * 3 + k]);
+      if (dot(n, sum) < 0) n = n.map(x => -x);
+      out.push({ q, n, group: materialIndex });
+    }
+  }
+  return out;
+}
+
+function standsOnAFace(cells, tris, a, b, beside) {
+  // whether the line a-b lies across a face's surface, not along its edge: a stud's foot on a brick's top, written as
+  // one face under it, is an inside corner, though only the stud's side is found beside it (mesh.rs stands_on_a_face())
+  const middle = a.map((v, k) => (v + b[k]) / 2);
+  return (cells.get(middle.map(v => Math.floor(v / CELL)).join(',')) ?? []).some(t => {
+    const { q, n } = tris[t];
+    const inPlane = p => Math.abs(dot(sub(p, q[0]), n)) <= WELD;
+    return Math.abs(dot(n, beside)) < SAME_FACE && inPlane(a) && inPlane(b) && onFace(middle, q, n);
+  });
+}
+
+function grid(tris) {
+  // the triangles by the CELL-wide cells their boxes cover
+  const cells = new Map();
+  tris.forEach(({ q }, t) => {
+    const c = q.map(p => p.map(v => Math.floor(v / CELL)));
+    const lo = [0, 1, 2].map(k => Math.min(...c.map(p => p[k]))), hi = [0, 1, 2].map(k => Math.max(...c.map(p => p[k])));
+    for (let x = lo[0]; x <= hi[0]; x++) for (let y = lo[1]; y <= hi[1]; y++) for (let z = lo[2]; z <= hi[2]; z++) {
+      const key = `${x},${y},${z}`;
+      if (!cells.has(key)) cells.set(key, []);
+      cells.get(key).push(t);
+    }
+  });
+  return cells;
+}
+
+// A part's rims (mesh.rs rims()): each edge line with the faces along it, a face whose edge lies along it, one a
+// direction; two at an angle sharper than smoothing joins, at an outside corner, make a rim; one makes one unless the
+// line lies on another face; a face on both sides of the line, none. {material index: [a, b, n0, n1] each}
+export function rimsOf(faceGeometry, lineGeometry) {
+  const tris = triangles(faceGeometry);
+  const pos = lineGeometry.attributes.position.array;
+  const lines = [];
+  for (let v = 0; v + 1 < pos.length / 3; v += 2) lines.push([Array.from(pos.subarray(v * 3, v * 3 + 3)), Array.from(pos.subarray(v * 3 + 3, v * 3 + 6))]);
+  const byEnd = new Map();
+  lines.forEach((l, k) => l.forEach(p => {
+    const key = weld(p);
+    if (!byEnd.has(key)) byEnd.set(key, []);
+    byEnd.get(key).push(k);
+  }));
+  const beside = lines.map(() => []), across = lines.map(() => false);
+  for (const tri of tris) {
+    const { q, n } = tri;
+    for (let e = 0; e < 3; e++) {
+      const [a, b, off] = [q[e], q[(e + 1) % 3], q[(e + 2) % 3]];
+      const near = new Set([...(byEnd.get(weld(a)) ?? []), ...(byEnd.get(weld(b)) ?? [])]);
+      for (const k of near) {
+        const [la, lb] = lines[k];
+        if (!(onSegment(a, la, lb) && onSegment(b, la, lb))) continue;
+        const side = p => dot(cross(sub(lb, la), sub(p, la)), n) > 0;
+        const same = beside[k].find(f => Math.abs(dot(f.n, n)) > SAME_FACE);
+        if (same) across[k] ||= side(same.off) !== side(off);
+        else beside[k].push({ n, off, group: tri.group });
       }
     }
-    return [geometry, materialIndex];
-  });
-}
-
-function wide(segments) {
-  // a LineSegments2 for each material group: LineSegmentsGeometry has one material
-  if (!wides.has(segments.geometry)) wides.set(segments.geometry, wideGeometries(segments));
-  const materials = [segments.material].flat();
-  return wides.get(segments.geometry).map(([geometry, materialIndex]) => {
-    const line = new LineSegments2(geometry, lineMaterial(materials[materialIndex], !!segments.isConditionalLine));
-    line.renderOrder = LINE_ORDER;
-    return line;
-  });
-}
-
-export function asBooklet(piece) {
-  const narrow = [];
-  piece.traverse(o => {
-    if (!o.isMesh) {
-      if (o.isLineSegments) narrow.push(o);
-      return;
-    }
-    if (!o.geometry.attributes.reference) reference(o.geometry);
-    o.material = Array.isArray(o.material) ? o.material.map(faceMaterial) : faceMaterial(o.material);
-  });
-  for (const o of narrow) {
-    for (const line of wide(o)) {
-      line.position.copy(o.position);
-      line.quaternion.copy(o.quaternion);
-      line.scale.copy(o.scale);
-      o.parent.add(line);
-    }
-    o.removeFromParent();
   }
+  let cells = null;
+  const out = {};
+  lines.forEach(([a, b], k) => {
+    const by = beside[k];
+    let rim = null;
+    if (across[k] || !by.length) rim = null;
+    else if (by.length === 1) {
+      cells ??= grid(tris);
+      if (!standsOnAFace(cells, tris, a, b, by[0].n)) rim = { n: [by[0].n, by[0].n], group: by[0].group };
+    } else {
+      const [f0, f1] = by;
+      const outsideOf = (n, off) => dot(sub(off, a), n) > 0;
+      const smooth = dot(f0.n, f1.n) > SMOOTH_COS;
+      const inside = outsideOf(f0.n, f1.off) && outsideOf(f1.n, f0.off);
+      if (!smooth && !inside) rim = { n: [f0.n, f1.n], group: f0.group };
+    }
+    if (rim) (out[rim.group] ??= []).push([a, b, ...rim.n]);
+  });
+  return out;
 }
 
-// Draws a shot's piece: white where its faces are curved, so that tools/compare3d.py knows which faces should be
-// shaded, black where they are flat: where the smooth normal turns from one pixel to the next by over CURVED_TURN
-// (radians), a flat face's being one normal throughout
-const CURVED_TURN = 1e-3;
-export const curves = new THREE.ShaderMaterial({
-  uniforms: { least: { value: CURVED_TURN } },
-  vertexShader: FACE_VERTEX,
-  fragmentShader: /* glsl */`
-    uniform float least;
-    varying vec3 vNormal;
-    void main() {
-      vec3 n = normalize(vNormal);
-      gl_FragColor = vec4(vec3(length(dFdx(n)) + length(dFdy(n)) > least ? 1.0 : 0.0), 1.0);
-    }`,
-  toneMapped: false,
-});
+function rimGeometries(faceGeometry, lineGeometry) {
+  // a LineSegmentsGeometry of a part's rims for each material index of the faces they take their colour from
+  if (!rimSets.has(faceGeometry)) {
+    const rims = rimsOf(faceGeometry, lineGeometry);
+    const made = Object.entries(rims).map(([group, list]) => {
+      const geometry = new LineSegmentsGeometry().setPositions(list.flatMap(([a, b]) => [...a, ...b]));
+      for (const [name, at] of [['instanceN0', 2], ['instanceN1', 3]]) {
+        geometry.setAttribute(name, new THREE.InstancedBufferAttribute(new Float32Array(list.flatMap(r => r[at])), 3));
+      }
+      return [geometry, Number(group)];
+    });
+    rimSets.set(faceGeometry, made);
+  }
+  return rimSets.get(faceGeometry);
+}
+
+function rimLook(m, tyre) {
+  // a rim's material: LineMaterial's band, a rim width wide, lit as a bevel turning from one face's normal to the other's
+  const rough = finish(m, tyre);
+  const key = `${m.color.getHexString()} ${rough}`;
+  if (!rimLooks.has(key)) {
+    const material = new LineMaterial({ linewidth: widthPx, transparent: true, depthWrite: false, toneMapped: false });
+    material.resolution = resolution;
+    material.uniforms.base = { value: new THREE.Vector3(m.color.r, m.color.g, m.color.b) };
+    material.uniforms.rough = { value: rough };
+    material.uniforms.keyDir = shared.keyDir;
+    material.uniforms.upDir = shared.upDir;
+    Object.assign(material.uniforms, lightUniforms);
+    material.vertexShader = material.vertexShader
+      .replace('attribute vec3 instanceEnd;', `attribute vec3 instanceEnd;
+        attribute vec3 instanceN0;
+        attribute vec3 instanceN1;
+        varying vec3 vN0;
+        varying vec3 vN1;`)
+      .replace('float aspect = resolution.x / resolution.y;', `float aspect = resolution.x / resolution.y;
+        vN0 = normalize(normalMatrix * instanceN0);
+        vN1 = normalize(normalMatrix * instanceN1);`);
+    material.fragmentShader = `${shared.glsl}
+      uniform vec3 base;
+      uniform float rough;
+      varying vec2 vUv;
+      varying vec3 vN0;
+      varying vec3 vN1;
+      void main() {
+        // how far across the band, 0 on the edge to 1 at its side, round at its ends as the renderer's is
+        float a = vUv.x;
+        float b = abs(vUv.y) > 1.0 ? (vUv.y > 0.0 ? vUv.y - 1.0 : vUv.y + 1.0) : 0.0;
+        float off = sqrt(a * a + b * b);
+        if (off >= 1.0) discard;
+        // it reflects the studio as the face beside it seen most squarely does (gloss.rs rim())
+        vec3 square = dot(vN0, TO_EYE) >= dot(vN1, TO_EYE) ? vN0 : vN1;
+        vec3 surround; float highlight, through;
+        specular(square, rough, surround, highlight, through);
+        float keyed = shade();   // the share of the key box the face under the rim sees (gloss.rs rim())
+        vec3 best = vec3(0.0);
+        for (int k = 0; k <= ARC_STEPS; k++) {
+          vec3 arc = normalize(mix(vN0, vN1, float(k) / float(ARC_STEPS)));
+          vec3 c = encode(litReflecting(base, arc, surround, through, rough, 1.0, keyed));
+          if (lum709(c) > lum709(best)) best = c;
+        }
+        gl_FragColor = vec4(best, 1.0 - off);
+      }`;
+    // drawn only where its own piece's faces are (marked())
+    Object.assign(material, { stencilWrite: true, stencilFunc: THREE.EqualStencilFunc, stencilFail: THREE.KeepStencilOp,
+      stencilZFail: THREE.KeepStencilOp, stencilZPass: THREE.KeepStencilOp, stencilWriteMask: 0 });
+    rimLooks.set(key, material);
+  }
+  return rimLooks.get(key);
+}
+
+function marked(o, id) {
+  // the stencil value of a piece's faces and rims, set as each is drawn: their materials are shared between pieces
+  o.onBeforeRender = (renderer, scene, camera, geometry, material) => { material.stencilRef = id; };
+}
+
+// Draws piece (the loader's group of one part) in the gloss look: n numbers it in its picture, tyre whether it is a
+// tyre (NUMBER.json's look.tyres), rubber whatever its colour
+export function asGloss(piece, n, tyre) {
+  const id = n % PIECE_IDS + 1;
+  const meshes = [], lines = [];
+  piece.traverse(o => {
+    if (o.isMesh) meshes.push(o);
+    else if (o.isLineSegments) lines.push(o);
+  });
+  for (const o of meshes) {
+    const original = [o.material].flat();
+    const materials = original.map(m => faceLook(m, tyre));
+    const multi = Array.isArray(o.material);
+    o.material = multi ? materials.map(([first]) => first) : materials[0][0];
+    if (!multi && materials[0].length > 1) {
+      // glass's second pass: its reflections, added over what it filters
+      const reflect = new THREE.Mesh(o.geometry, materials[0][1]);
+      reflect.renderOrder = GLASS_ADD_ORDER;
+      reflect.userData.glassPass = true;
+      o.add(reflect);
+    }
+    marked(o, id);
+    if (!original.some(m => m.transparent)) o.layers.enable(SOLID);   // it casts a shadow and hides the sky
+    const edges = lines.find(l => !l.isConditionalLine && l.parent === o.parent && l.matrix.equals(o.matrix));
+    if (!edges) continue;
+    for (const [geometry, group] of rimGeometries(o.geometry, edges.geometry)) {
+      const m = original[group] ?? original[0];
+      if (m.transparent) continue;   // glass gets no rims (render.rs rims())
+      const rim = new LineSegments2(geometry, rimLook(m, tyre));
+      rim.renderOrder = RIM_ORDER;
+      rim.position.copy(o.position);
+      rim.quaternion.copy(o.quaternion);
+      rim.scale.copy(o.scale);
+      marked(rim, id);
+      o.parent.add(rim);
+    }
+  }
+  for (const o of lines) o.removeFromParent();
+}
 
 // Whether a piece's mesh is glass: it doesn't hide a new piece behind it (picture.keyed())
 export function isGlass(o) {
   return [o.material].flat().some(m => m.transparent);
 }
 
-// The lines' width in device px, and the drawing buffer's size, which LineMaterial measures it in
-export function setLines(px, buffer) {
+// The key light and the sky's direction in the camera's view, as gloss.rs Lights::new() places them: the key behind the
+// camera, to its left and above (NUMBER.json's look.light), the sky up the world
+export function setCamera(camera) {
+  if (!shared) return;
+  camera.updateMatrixWorld();
+  const view = camera.matrixWorldInverse;
+  const up = new THREE.Vector3(0, 1, 0).transformDirection(view);
+  const toEye = new THREE.Vector3(0, 0, 1);
+  const left = new THREE.Vector3().crossVectors(toEye, up).normalize();
+  const [behind, fromLeft, above] = look.light;
+  shared.upDir.value.copy(up);
+  shared.keyDir.value.copy(toEye.multiplyScalar(behind).addScaledVector(left, fromLeft).addScaledVector(up, above).normalize());
+}
+
+// Works out the shadow and occlusion of the picture shown (group), the key where setCamera() put it (light.js): whether
+// it drew them (they hadn't moved)
+export function lightUp(renderer, scene, camera, group) {
+  return shared ? updateLight(renderer, scene, camera, group, shared.keyDir.value) : false;
+}
+
+// A rim's width in device px, and the drawing buffer's size, which LineMaterial measures it in
+export function setRims(px, buffer) {
   widthPx = px;
   resolution.copy(buffer);
-  for (const m of lines.values()) {
+  for (const m of rimLooks.values()) {
     m.linewidth = px;
     m.resolution = buffer;
   }
-  for (const m of faces.values()) if (!m.transparent) m.polygonOffsetFactor = OFFSET_WIDTHS * px;
+  for (const [m] of faces.values()) if (!m.transparent) m.polygonOffsetFactor = OFFSET_WIDTHS * px;
 }
