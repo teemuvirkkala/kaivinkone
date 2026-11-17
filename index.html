@@ -1,24 +1,214 @@
 <!doctype html>
-<html lang="fi"><head><meta charset="utf-8"><meta name="robots" content="noindex"><meta name="viewport" content="width=device-width, initial-scale=1">
+<html lang="fi"><head><meta charset="utf-8"><meta name="robots" content="noindex">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#d6ebfa">
 <title>Kaivinkone – rakennusohjeet</title>
-<style>body{font:18px/1.5 system-ui,sans-serif;max-width:40em;margin:2em auto;padding:0 16px;background:#d6ebfa;color:#222}
-a{color:#0b4f8a} li{margin:.6em 0}
-#locked{text-align:center;margin:3em 0} .nights{font-size:2.4em;font-weight:800;margin:0}
-.clock{font-size:1.6em;font-variant-numeric:tabular-nums;margin:.2em 0 1em}</style></head>
-<body><h1>Kaivinkone</h1>
-<div id="locked" hidden></div>
-<div id="content" hidden>
-<p>Lataa rakennusohjeet PDF-tiedostona. <i>Download the building instructions as a PDF.</i></p>
-<ul>
-<li><a href="KAIVINKONE001.pdf"><b>KAIVINKONE001</b></a> — Kaivinkone pyörillä, ohjaamo vasemmalla · <i>Excavator on wheels, cab on the left</i></li>
-</ul>
-<p><a href="3d/"><b>Rakenna 3D:nä</b></a> — käännä mallia sormella, vaihe vaiheelta kirjan sivujen mukaan ·
-<i>Build it in 3D, step by step with the booklet's pages</i></p>
+<link rel="icon" href="kuvat/ikoni.png">
+<link rel="preload" href="fontit/raskas.woff2" as="font" type="font/woff2" crossorigin>
+<style>@font-face{font-family:otsikko;src:url(fontit/otsikko.woff2) format('woff2');font-display:swap}
+@font-face{font-family:raskas;src:url(fontit/raskas.woff2) format('woff2');font-display:swap}
+@font-face{font-family:lihava;src:url(fontit/lihava.woff2) format('woff2');font-display:swap}
+@font-face{font-family:teksti;src:url(fontit/teksti.woff2) format('woff2');font-display:swap}
+:root{--sky:#d6ebfa;--paper:#ffffff;--ink:#1d1d1b;
+--doodles:url(kuvat/piirrokset.webp);--doodles-ratio:4.149;
+--poster-ratio:1520/1008;--figure-height:0.384}
+/* The index page (tools/website.py writes it in, ADR-0071), laid out as the booklet's covers. website.py sets the
+   colours, the doodles and the back cover's proportions as variables on :root. */
+:root { --col: min(100vw, 760px); --gutter: 16px; --yellow: #fac80a; --yellow-ink: #3a2c00; --link: #0b4f8a;
+  --shade: 0 2px 10px rgba(29, 29, 27, .14); color-scheme: light; }
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--paper); color: var(--ink); font: 17px/1.45 teksti, system-ui, sans-serif;
+  -webkit-tap-highlight-color: transparent; }
+b, strong { font-family: lihava, system-ui, sans-serif; font-weight: 700; }
+a { color: var(--link); }
+[hidden] { display: none !important; }
+.vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.sarake { width: var(--col); margin: 0 auto; padding: 0 var(--gutter); }
+
+/* The cover's doodles of the model's pieces, on white */
+.piirrokset { height: clamp(72px, calc(100vw / var(--doodles-ratio)), 240px); background: var(--doodles) center top / cover no-repeat; }
+
+/* Until it opens: the back cover's panel, the nights left in its huge white word, the driver beside them */
+.lukko { position: relative; overflow: hidden; background: var(--sky); min-height: clamp(440px, 66vh, 560px);
+  padding: 28px max(var(--gutter), calc((100vw - var(--col)) / 2 + var(--gutter))) 24px; }
+.laskuri { display: flex; align-items: stretch; gap: 6px; position: relative; z-index: 1; }
+.sivu { writing-mode: vertical-rl; transform: rotate(180deg); text-align: right; font: 800 clamp(18px, 4.6vw, 30px)/1 raskas, system-ui, sans-serif;
+  color: #fff; text-transform: uppercase; letter-spacing: .02em; padding-top: .08em; }
+.iso-luku { font: 800 clamp(150px, 46vw, 330px)/.78 raskas, system-ui, sans-serif; color: #fff; letter-spacing: -.04em;
+  font-variant-numeric: tabular-nums; }
+.sana { position: relative; z-index: 1; margin: 14px 0 0; font: 800 clamp(34px, 10vw, 64px)/1 raskas, system-ui, sans-serif; }
+.kello { position: relative; z-index: 1; margin: 10px 0 0; font: 700 clamp(18px, 5vw, 26px)/1.2 lihava, system-ui, sans-serif;
+  font-variant-numeric: tabular-nums; }
+.kuljettaja { position: absolute; right: max(0px, calc((100vw - var(--col)) / 2)); bottom: 0; width: auto;
+  height: max(58%, calc(var(--col) * var(--figure-height)));
+  /* faded in at his picture's left and top, which the PDF's blue meets the page's at */
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 12%), linear-gradient(to bottom, transparent, #000 12%);
+  -webkit-mask-composite: source-in; mask-image: linear-gradient(to right, transparent, #000 12%), linear-gradient(to bottom, transparent, #000 12%);
+  mask-composite: intersect; }
+.milloin { width: var(--col); margin: 0 auto; padding: 16px var(--gutter) 0; font-size: 15px; }
+
+/* Once open: the cover's band, its title at the top left and the finished model */
+.kansi { background: var(--sky); padding: 18px 0 8px; }
+.kansi h1 { width: var(--col); margin: 0 auto; padding: 0 var(--gutter); font: 700 clamp(18px, 4.4vw, 26px)/1 otsikko, system-ui, sans-serif;
+  letter-spacing: .01em; }
+.malli { position: relative; display: block; width: var(--col); margin: 0 auto; aspect-ratio: var(--poster-ratio); }
+.malli img, .malli iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; transition: opacity .6s; }
+.malli img { object-fit: contain; }
+.malli iframe { opacity: 0; pointer-events: none; background: transparent; }
+.malli.elää iframe { opacity: 1; }
+.malli.elää img { opacity: 0; }
+.auki .kansi h1 { animation: pop .7s cubic-bezier(.2, 1.6, .4, 1); }
+@keyframes pop { from { transform: scale(.4); opacity: 0; } to { transform: none; opacity: 1; } }
+
+main { width: var(--col); margin: 0 auto; padding: 20px var(--gutter) 8px; }
+.napit { display: grid; gap: 12px; }
+@media (min-width: 640px) { .napit { grid-template-columns: 1fr 1fr; } }
+.nappi { display: flex; flex-direction: column; gap: 2px; padding: 16px 18px 14px; border-radius: 18px; text-decoration: none;
+  color: var(--ink); box-shadow: var(--shade); transition: transform .12s; }
+.nappi:active { transform: scale(.98); }
+.nappi .iso { font: 800 26px/1.15 raskas, system-ui, sans-serif; }
+.nappi .pieni { font-size: 14px; }
+.nappi .pieni[lang="en"] { font-style: italic; opacity: .8; }
+.rakenna { background: var(--yellow); color: var(--yellow-ink); }
+.rakenna .iso::before { content: "▶\FE0E"; display: inline-block; margin-right: 10px; font-size: .8em; transform: translateY(-.08em); }
+.pdf { background: #fff; box-shadow: inset 0 0 0 2px var(--sky), var(--shade); }
+
+.kirja { margin-top: 28px; }
+.kirja h2 { margin: 0; font: 800 22px/1.2 raskas, system-ui, sans-serif; }
+.kirja h2 span { font: italic 400 15px teksti, system-ui, sans-serif; opacity: .8; margin-left: 6px; }
+.kirja h3 { margin: 18px 0 0; font-size: 16px; }
+.kirja p { margin: 4px 0 0; font-size: 15px; }
+.sivut { list-style: none; display: flex; gap: 12px; margin: 12px calc(-1 * var(--gutter)) 0; padding: 4px var(--gutter) 16px;
+  overflow-x: auto; scroll-snap-type: x proximity; scroll-padding: 0 var(--gutter); overscroll-behavior-x: contain; }
+.sivut li { flex: none; scroll-snap-align: start; }
+.sivut a { position: relative; display: block; width: 160px; border-radius: 10px; overflow: hidden; box-shadow: var(--shade); }
+.sivut img { display: block; width: 100%; height: auto; }
+.sivut .no { position: absolute; left: 6px; bottom: 6px; min-width: 28px; padding: 1px 7px; border-radius: 999px; background: #fff;
+  color: var(--ink); font: 700 14px/1.5 lihava, system-ui, sans-serif; text-align: center; }
+.sivut .kolmed { position: absolute; right: 6px; bottom: 6px; padding: 1px 8px; border-radius: 999px; background: var(--yellow);
+  color: var(--yellow-ink); font: 800 13px/1.6 raskas, system-ui, sans-serif; }
+
+/* The back cover's band: its small print */
+/* kept out of sight until the lock shows the countdown or the page (site/lock.js), so it doesn't jump down then */
+body:not(.valmis) footer { visibility: hidden; }
+footer { width: var(--col); margin: 0 auto; padding: 12px var(--gutter) max(24px, env(safe-area-inset-bottom)); font-size: 13px; }
+footer p { margin: 0 0 8px; }
+
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+<noscript><style>#content{display:block!important}footer{visibility:visible!important}</style></noscript>
+</head>
+<body>
+<div class="piirrokset" role="presentation"></div>
+<div id="locked" hidden>
+<section class="paneeli lukko">
+<div class="laskuri"><span class="sivu" data-lock="side"></span><span class="iso-luku" data-lock="count"></span></div>
+<p class="sana" data-lock="word"></p>
+<p class="kello" data-lock="clock"></p>
+<img src="kuvat/kuljettaja.webp" width="521" height="679" alt="" class="kuljettaja">
+</section>
+<p class="milloin" data-lock="when"></p>
 </div>
+<div id="content" hidden>
+<section class="kansi">
+<h1>KAIVINKONE</h1>
+<a class="malli" href="3d/#KAIVINKONE001/1" data-set="KAIVINKONE001"><img src="kuvat/kansi.webp" width="1520" height="1008" alt="Kaivinkone pyörillä, ohjaamo vasemmalla – rakenna 3D:nä" fetchpriority="high"></a>
+</section>
+<main>
+<div class="napit">
+<a class="nappi rakenna" href="3d/#KAIVINKONE001/1"><span class="iso">Rakenna 3D:nä</span>
+<span class="pieni">Käännä mallia sormella, vaihe vaiheelta kirjan sivujen mukaan</span>
+<span class="pieni" lang="en">Build it in 3D, step by step with the booklet's pages</span></a>
+<a class="nappi pdf" href="KAIVINKONE001.pdf"><span class="iso">Lataa PDF</span><span class="pieni">Kaivinkone pyörillä, ohjaamo vasemmalla · 68 sivua · 20 Mt</span><span class="pieni" lang="en">Download the PDF: Excavator on wheels, cab on the left, 68 pages, 20 MB</span></a>
+</div>
+<section class="kirja">
+<h2>Kirjan sivut <span lang="en">The booklet's pages</span></h2>
+<p>Napauta sivua, niin näet sen vaiheen 3D:nä. <i lang="en">Tap a page to see its step in 3D.</i></p>
+<ol class="sivut">
+<li><a href="KAIVINKONE001.pdf#page=1"><img src="kuvat/KAIVINKONE001-01.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>1</span></a></li>
+<li><a href="3d/#KAIVINKONE001/1"><img src="kuvat/KAIVINKONE001-02.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>2</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/1"><img src="kuvat/KAIVINKONE001-03.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>3</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/3"><img src="kuvat/KAIVINKONE001-04.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>4</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/3"><img src="kuvat/KAIVINKONE001-05.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>5</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/4"><img src="kuvat/KAIVINKONE001-06.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>6</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/4"><img src="kuvat/KAIVINKONE001-07.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>7</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/5"><img src="kuvat/KAIVINKONE001-08.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>8</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/5"><img src="kuvat/KAIVINKONE001-09.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>9</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/6"><img src="kuvat/KAIVINKONE001-10.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>10</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/6"><img src="kuvat/KAIVINKONE001-11.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>11</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/7"><img src="kuvat/KAIVINKONE001-12.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>12</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/7"><img src="kuvat/KAIVINKONE001-13.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>13</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/8"><img src="kuvat/KAIVINKONE001-14.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>14</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/8"><img src="kuvat/KAIVINKONE001-15.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>15</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/10"><img src="kuvat/KAIVINKONE001-16.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>16</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/10"><img src="kuvat/KAIVINKONE001-17.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>17</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/12"><img src="kuvat/KAIVINKONE001-18.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>18</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/12"><img src="kuvat/KAIVINKONE001-19.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>19</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/14"><img src="kuvat/KAIVINKONE001-20.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>20</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/14"><img src="kuvat/KAIVINKONE001-21.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>21</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/15"><img src="kuvat/KAIVINKONE001-22.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>22</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/15"><img src="kuvat/KAIVINKONE001-23.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>23</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/16"><img src="kuvat/KAIVINKONE001-24.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>24</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/16"><img src="kuvat/KAIVINKONE001-25.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>25</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/18"><img src="kuvat/KAIVINKONE001-26.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>26</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/18"><img src="kuvat/KAIVINKONE001-27.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>27</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/20"><img src="kuvat/KAIVINKONE001-28.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>28</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/20"><img src="kuvat/KAIVINKONE001-29.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>29</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/22"><img src="kuvat/KAIVINKONE001-30.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>30</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/22"><img src="kuvat/KAIVINKONE001-31.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>31</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/23"><img src="kuvat/KAIVINKONE001-32.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>32</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/23"><img src="kuvat/KAIVINKONE001-33.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>33</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/25"><img src="kuvat/KAIVINKONE001-34.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>34</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/25"><img src="kuvat/KAIVINKONE001-35.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>35</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/26"><img src="kuvat/KAIVINKONE001-36.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>36</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/26"><img src="kuvat/KAIVINKONE001-37.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>37</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/27"><img src="kuvat/KAIVINKONE001-38.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>38</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/27"><img src="kuvat/KAIVINKONE001-39.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>39</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/28"><img src="kuvat/KAIVINKONE001-40.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>40</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/28"><img src="kuvat/KAIVINKONE001-41.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>41</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/29"><img src="kuvat/KAIVINKONE001-42.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>42</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/29"><img src="kuvat/KAIVINKONE001-43.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>43</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/30"><img src="kuvat/KAIVINKONE001-44.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>44</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/30"><img src="kuvat/KAIVINKONE001-45.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>45</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/32"><img src="kuvat/KAIVINKONE001-46.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>46</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/32"><img src="kuvat/KAIVINKONE001-47.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>47</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/34"><img src="kuvat/KAIVINKONE001-48.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>48</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/34"><img src="kuvat/KAIVINKONE001-49.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>49</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/35"><img src="kuvat/KAIVINKONE001-50.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>50</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/35"><img src="kuvat/KAIVINKONE001-51.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>51</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/36"><img src="kuvat/KAIVINKONE001-52.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>52</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/36"><img src="kuvat/KAIVINKONE001-53.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>53</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/38"><img src="kuvat/KAIVINKONE001-54.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>54</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/38"><img src="kuvat/KAIVINKONE001-55.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>55</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/40"><img src="kuvat/KAIVINKONE001-56.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>56</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/40"><img src="kuvat/KAIVINKONE001-57.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>57</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/41"><img src="kuvat/KAIVINKONE001-58.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>58</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/41"><img src="kuvat/KAIVINKONE001-59.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>59</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/42"><img src="kuvat/KAIVINKONE001-60.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>60</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/42"><img src="kuvat/KAIVINKONE001-61.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>61</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/43"><img src="kuvat/KAIVINKONE001-62.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>62</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="3d/#KAIVINKONE001/43"><img src="kuvat/KAIVINKONE001-63.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>63</span><span class="kolmed">3D<span class="vh">:nä</span></span></a></li>
+<li><a href="KAIVINKONE001.pdf#page=64"><img src="kuvat/KAIVINKONE001-64.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>64</span></a></li>
+<li><a href="KAIVINKONE001.pdf#page=65"><img src="kuvat/KAIVINKONE001-65.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>65</span></a></li>
+<li><a href="KAIVINKONE001.pdf#page=66"><img src="kuvat/KAIVINKONE001-66.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>66</span></a></li>
+<li><a href="KAIVINKONE001.pdf#page=67"><img src="kuvat/KAIVINKONE001-67.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>67</span></a></li>
+<li><a href="KAIVINKONE001.pdf#page=68"><img src="kuvat/KAIVINKONE001-68.webp" width="320" height="249" alt="" loading="lazy" decoding="async"><span class="no"><span class="vh">Sivu </span>68</span></a></li>
+</ol>
+</section>
+</main>
+</div>
+<footer>
+<p><b>FI:</b> Kaivinkone: rakennusohjeet kirjana ja 3D:nä.
+<b lang="en">EN:</b> <span lang="en">Building instructions for the excavator, as a booklet and in 3D.</span></p>
+<p lang="en">The 3D pieces are from the LDraw.org Parts Library (CC BY 2.0); the 3D page uses three.js (MIT); the
+type is Inter and Roboto (SIL OFL 1.1, Apache 2.0).</p>
+<p lang="en">LEGO and the LEGO logo are trademarks of the LEGO Group, which does not sponsor, authorize or endorse this booklet.</p>
+</footer>
 <script type="module">
 import { guard } from './lock.js';
-guard({ locked: document.getElementById('locked'), content: document.getElementById('content') });
+import { liven } from './site.js';
+guard({ locked: document.getElementById('locked'), content: document.getElementById('content'),
+  onOpen: live => liven(document.querySelector('.malli'), live) }).then(() => document.body.classList.add('valmis'));
 </script>
-<p><small>The 3D pieces are from the LDraw.org Parts Library (CC BY 2.0); the 3D page uses three.js (MIT).</small><br>
-<small>LEGO® is a trademark of the LEGO Group, which does not sponsor, authorize or endorse these instructions.</small></p>
 </body></html>
