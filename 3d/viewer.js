@@ -19,8 +19,6 @@ import { drawOutline, prepare, setOutline } from './outline.js';
 import { gpuTimer, showTimes } from './ajat.js';
 
 const HOLD_MS = 700;         // a picture stays as the page draws it this long before its pieces move
-const DROP_MS = 650;
-const STAGGER_MS = 160;      // between the moves of one picture's units
 const CAMERA_MS = 800;       // a camera move, or a turn of the model in the hands
 const CUT_MS = 200;          // a fade to another sub-model: out, then in
 const CUT_SWAP = 0.5;        // the share of a cut at which the screen is blank and the next picture goes on
@@ -113,6 +111,8 @@ function picture(i) {
         child.userData.start = way ? child.userData.rest.clone().addScaledVector(new THREE.Vector3(...way), way[3]) : null;
       });
       pose(group, 'built');
+      // each piece's middle from its origin, in the group's frame: a piece only slides, so it stays
+      for (const child of group.children) child.userData.centre = (middle([child]) ?? child.position.clone()).sub(child.position);
       group.userData.middle = middle(group.children);
       group.userData.older = middle(group.children.filter(child => child.userData.unit < 0)) ?? group.userData.middle;
       pose(group, 'drawn');   // where the grown copies' places (outlined) are given from
@@ -350,7 +350,7 @@ function put(i, group, drop) {
   moves = [];
   pose(group, drop ? 'start' : 'built');
   if (drop) move(group);
-  outlineFades = Math.max(performance.now() + HOLD_MS, ...moves.map(m => m.t0 + DROP_MS));
+  outlineFades = Math.max(performance.now() + HOLD_MS, ...moves.map(m => m.t0 + data.motion.ms));
   ahead(i + 1, outlineFades + FADE_MS - performance.now());
   controls.autoRotate = data.steps[i].kind === 'finale' || (SHOW && turning);
   controls.autoRotateSpeed = FINALE_SPIN;
@@ -368,13 +368,14 @@ function ahead(i, after) {
 
 function move(group) {
   // each unit a moment after the one before, or once the units it waits for (NUMBER.json's waits: stacked on them,
-  // it would meet them on the way) have landed
+  // it would meet them on the way) have landed: the times NUMBER.json's motion gives, which tools/insertion.py's
+  // replayed() steps through to check the frames
   const starts = new Map();
   const units = [...new Set(group.children.map(c => c.userData.unit).filter(u => u >= 0))].sort((a, b) => a - b);
   const t0 = performance.now() + HOLD_MS;
   for (const unit of units) {
-    const after = (group.userData.waits[unit] ?? []).map(v => starts.get(v) + DROP_MS);
-    starts.set(unit, Math.max(t0 + STAGGER_MS * unit, ...after));
+    const after = (group.userData.waits[unit] ?? []).map(v => starts.get(v) + data.motion.ms);
+    starts.set(unit, Math.max(t0 + data.motion.stagger * unit, ...after));
   }
   for (const child of group.children) {
     const { unit, rest } = child.userData;
@@ -411,7 +412,7 @@ function step(by) {
 
 function tick(now) {
   moves = moves.filter(({ child, from, to, t0 }) => {
-    const t = Math.min(1, Math.max(0, (now - t0) / DROP_MS));
+    const t = Math.min(1, Math.max(0, (now - t0) / data.motion.ms));
     child.position.lerpVectors(from, to, ease(t));
     return t < 1;
   });
@@ -444,8 +445,7 @@ function tracked(now) {
   // middle on the screen as it moves, and how many pieces are still moving
   const pieces = shown.children.filter(c => c.userData.unit >= 0).map(c => {
     const off = c.position.clone().sub(c.userData.rest);
-    const box = new THREE.Box3().setFromObject(c);
-    return [c.userData.index, off.x, off.y, off.z, ...projected(box.getCenter(new THREE.Vector3()))];
+    return [c.userData.index, off.x, off.y, off.z, ...onScreen(c.position.clone().add(c.userData.centre))];
   });
   return { t: now, picture: onStage, middle: onScreen(shown.userData.middle), older: onScreen(shown.userData.older),
     opacity: Number(canvas.style.opacity || 1), change: change?.kind ?? null, pieces, moving: moves.length };
