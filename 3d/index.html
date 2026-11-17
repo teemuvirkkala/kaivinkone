@@ -52,20 +52,39 @@ window.first = (sets => {   // window.sets: [{number, label}], tools/web3d.py wr
   <span id="turn" class="chip turn" hidden></span>
 </div>
 
+<div id="piece" role="dialog" aria-label="Palikka" hidden>
+  <span id="swatch" aria-hidden="true"></span>
+  <div class="about">
+    <div><span id="colour"></span> <span id="shape" lang="en"></span></div>
+    <div id="counts"></div>
+  </div>
+  <button id="unpick" class="close" aria-label="Sulje">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6 18 18M18 6 6 18"/></svg>
+  </button>
+</div>
+
+<button id="home" class="round" aria-label="Palauta näkymä" hidden>
+  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/><circle cx="12" cy="12" r="2.5"/></svg>
+</button>
+
 <div id="done" hidden>Valmis!</div>
 <div id="loading">Ladataan palikoita…</div>
 
 <footer>
-  <button id="prev" class="nav" aria-label="Edellinen vaihe">◀</button>
+  <button id="prev" class="nav" aria-label="Edellinen vaihe">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path class="arrow" d="M17 3 17 21 2 12Z"/></svg>
+  </button>
   <div class="where">
     <div class="step"><span id="num">1</span></div>
     <div class="info">
       <div id="page">sivu 2–3</div>
       <div id="caption" lang="en"></div>
-      <div class="bar"><div id="progress"></div></div>
+      <input id="steps" type="range" min="1" max="1" value="1" step="1" aria-label="Vaihe">
     </div>
   </div>
-  <button id="next" class="nav primary" aria-label="Seuraava vaihe">▶</button>
+  <button id="next" class="nav primary" aria-label="Seuraava vaihe">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path class="arrow" d="M7 3 7 21 22 12Z"/></svg>
+  </button>
 </footer>
 
 <script type="module" src="viewer.js"></script>
