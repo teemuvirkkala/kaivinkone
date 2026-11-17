@@ -6,7 +6,9 @@
 // moves where the camera is the same; a picture turned (its badge) turns the model in the reader's hands, about its
 // middle; another sub-model is a short fade, as a page turns; else the camera moves there once. ?shot opens a bare
 // picture for tools/compare3d.py (window.shot); window.track, an array, gets each frame's middle of the model on the
-// screen (tools/moves3d.cjs).
+// screen (tools/moves3d.cjs). ?esittely shows only the cover's model (NUMBER.json's cover), for the index page's
+// opening view (tools/website.py, ADR-0071): it can't be turned by hand, tells the page round it when its first frame
+// is drawn, turns round when that page says 'turn' and stops drawing while it says 'pause' (scrolled out of sight).
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { LDrawLoader } from 'three/addons/loaders/LDrawLoader.js';
@@ -26,8 +28,8 @@ const CUT_SWAP = 0.5;        // the share of a cut at which the screen is blank 
 const FADE_MS = 600;         // the new pieces' outline fades out this long once they are in place
 const IDLE_MS = 1000;        // the next picture is built when the page is idle, or after this long at most
 const FINALE_SPIN = 1.2;     // OrbitControls autoRotateSpeed on the finished model
-const FIT_MARGIN = 1.15;     // room round the pieces when they fill the screen (NUMBER.json's fit)
 const SHOT = new URLSearchParams(location.search).has('shot');
+const SHOW = new URLSearchParams(location.search).has('esittely');
 
 const $ = id => document.getElementById(id);
 // Each phase's end as a performance mark, '3d:' and its name, which tools/time3d.cjs reads (#219)
@@ -37,6 +39,7 @@ const canvas = $('view');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, stencil: true, preserveDrawingBuffer: SHOT });
 renderer.setPixelRatio(SHOT ? 1 : Math.min(window.devicePixelRatio, 2));
 if (SHOT) document.body.classList.add('shot');
+if (SHOW) document.body.classList.add('esittely');
 
 const scene = new THREE.Scene();
 
@@ -45,6 +48,7 @@ const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, -20000, 20000);
 const controls = new OrbitControls(camera, canvas);
 controls.enableDamping = true;
 controls.enablePan = false;
+controls.enabled = !SHOW;
 controls.addEventListener('start', () => {
   if (change) settle(change, true);
   controls.autoRotate = false;
@@ -72,6 +76,9 @@ let loadId = 0;
 let shown = null;        // the picture's group on the stage
 let outlineFades = 0;    // when (performance.now()) its outline starts fading out
 let drawn = -1;          // a picture just put on the stage, marked once it is drawn
+let turning = false;     // ?esittely: the page round it has said 'turn'
+let paused = false;      // ?esittely: and then 'pause', no frames drawn till the next 'turn'
+let stopped = false;     // the frames stopped, paused: the next 'turn' starts them again, once
 
 function ease(t) {        // out-back: overshoots a little and settles, like a piece clicking on
   const c = 1.4;
@@ -133,7 +140,7 @@ async function load(number, files = window.setFiles(number), open = Promise.reso
   // parts it uses, each once, rather than the whole model built before the first picture (#219)
   fresh.partsCache.parseCache.parse(text);
   mark('parsed');
-  data = json;
+  data = SHOW ? { ...json, steps: [json.cover] } : json;
   setLook(data.look);
   loader = fresh;
   built.clear();
@@ -167,7 +174,7 @@ function bookletView(pic) {
   const perPx = THREE.MathUtils.degToRad(cam.fov) * distance / cam.size[1];
   const [w, h] = cam.size;
   const [x0, y0, x1, y1] = SHOT ? [0, 0, w, h] : pic.fit;
-  const k = SHOT ? 1 : FIT_MARGIN;
+  const k = SHOT ? 1 : data.margin;
   const up = fromLDraw(cam.up).normalize();
   const quaternion = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().lookAt(position, centre, up));
   const off = new THREE.Vector3(((x0 + x1) / 2 - w / 2) * perPx, (h / 2 - (y0 + y1) / 2) * perPx, 0);
@@ -341,7 +348,7 @@ function put(i, group, drop) {
   if (drop) move(group);
   outlineFades = Math.max(performance.now() + HOLD_MS, ...moves.map(m => m.t0 + DROP_MS));
   ahead(i + 1, outlineFades + FADE_MS - performance.now());
-  controls.autoRotate = data.steps[i].kind === 'finale';
+  controls.autoRotate = data.steps[i].kind === 'finale' || (SHOW && turning);
   controls.autoRotateSpeed = FINALE_SPIN;
 }
 
@@ -368,7 +375,7 @@ function label(i, pic) {
   const total = data.steps.length - 1;
   const finale = pic.kind === 'finale';
   $('num').textContent = finale ? '★' : i + 1;
-  $('page').textContent = finale ? 'Valmis kaivinkone' : `sivut ${pic.pages[0]}–${pic.pages[1]}`;
+  $('page').textContent = pic.pages ? `sivut ${pic.pages[0]}–${pic.pages[1]}` : 'Valmis kaivinkone';
   $('caption').textContent = pic.caption;
   $('progress').style.width = `${100 * Math.min(i, total) / total}%`;
   $('build').hidden = !pic.build;
@@ -408,9 +415,15 @@ function tick(now) {
     renderer.render(scene, camera);
   }
   drawOutline(renderer, scene, camera, shown, Math.min(1, 1 - (now - outlineFades) / FADE_MS));
-  if (drawn >= 0) { mark(`shown ${drawn + 1}`); drawn = -1; }
+  if (drawn >= 0) {
+    mark(`shown ${drawn + 1}`);
+    if (SHOW) window.parent.postMessage('3d:shown', location.origin);
+    drawn = -1;
+  }
   if (Array.isArray(window.track) && shown) window.track.push(tracked(now));
-  if (!SHOT) requestAnimationFrame(tick);
+  if (SHOT) return;
+  if (paused) stopped = true;
+  else requestAnimationFrame(tick);
 }
 
 function tracked(now) {
@@ -486,6 +499,16 @@ window.shot = async (i, mode = 'all') => {
   return data.steps.length;
 };
 
+window.addEventListener('message', e => {
+  if (!SHOW || e.origin !== location.origin || e.source !== window.parent) return;
+  if (e.data === 'turn') {
+    turning = true;
+    controls.autoRotate = true;
+    paused = false;
+    if (stopped) requestAnimationFrame(tick);
+    stopped = false;
+  } else if (e.data === 'pause') paused = true;
+});
 $('prev').addEventListener('click', () => step(-1));
 $('next').addEventListener('click', () => step(1));
 window.addEventListener('keydown', e => {
@@ -520,7 +543,7 @@ async function start() {
     mark('lock');
     if (!state.open) {
       loadId++;
-      location.replace(`../${location.search}`);
+      if (!SHOW) location.replace(`../${location.search}`);
     }
     return state.open;
   });

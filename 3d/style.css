@@ -59,9 +59,10 @@ footer { position: fixed; left: 0; right: 0; bottom: 0; display: flex; align-ite
   footer { gap: 8px; }
 }
 
-/* ?shot: a bare picture for tools/compare3d.py */
-body.shot { background: none; }
-body.shot header, body.shot #chips, body.shot footer, body.shot #loading, body.shot #done { display: none; }
+/* ?shot: a bare picture for tools/compare3d.py; ?esittely: the finished model alone, for the index page */
+body.shot, body.esittely { background: none; }
+body.shot header, body.shot #chips, body.shot footer, body.shot #loading, body.shot #done,
+body.esittely header, body.esittely #chips, body.esittely footer, body.esittely #loading, body.esittely #done { display: none; }
 
 /* ?ajat: the page's timings (ajat.js) */
 #ajat { position: fixed; top: calc(max(12px, env(safe-area-inset-top)) + 96px); left: 8px; right: 8px; margin: 0;
