@@ -9,6 +9,8 @@
 // screen (tools/moves3d.cjs). ?esittely shows only the cover's model (NUMBER.json's cover), for the index page's
 // opening view (tools/website.py, ADR-0071): it can't be turned by hand, tells the page round it when its first frame
 // is drawn, turns round when that page says 'turn' and stops drawing while it says 'pause' (scrolled out of sight).
+// A tap on a piece shows it whole through the others and names it, to find it in the pile; a reset button brings back
+// the booklet's view once the reader has turned the model; the slider goes to any step (ADR-0074).
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { LDrawLoader } from 'three/addons/loaders/LDrawLoader.js';
@@ -25,6 +27,12 @@ const CUT_SWAP = 0.5;        // the share of a cut at which the screen is blank 
 const FADE_MS = 600;         // the new pieces' outline fades out this long once they are in place
 const IDLE_MS = 1000;        // the next picture is built when the page is idle, or after this long at most
 const FINALE_SPIN = 1.2;     // OrbitControls autoRotateSpeed on the finished model
+const TAP_PX = 10;           // CSS px: a finger that moves no further than this between down and up taps, not turns
+const TAP_MS = 500;          // and is lifted within this long; a longer press is a hold, not a tap
+const VEIL = 0.6;            // the opacity of the sky laid over the model round a tapped piece, drawn whole over it
+const VEIL_COLOUR = 0xeef7fd;   // the sky's light middle (style.css's body)
+const GLASS_SHADE = 0.2;     // the opacity of the ink laid on a tapped glass piece, which the veil would hide: see-through, it has no face of its own
+const PICKED = 5;            // the layer of a tapped piece (outline.js has 1 to 3, light.js's SOLID 4)
 const SHOT = new URLSearchParams(location.search).has('shot');
 const SHOW = new URLSearchParams(location.search).has('esittely');
 
@@ -50,6 +58,10 @@ controls.addEventListener('start', () => {
   if (change) settle(change, true);
   controls.autoRotate = false;
 });
+// a finger or the mouse on the model: a tap picks the piece under it (pick()), a drag or a pinch turns or zooms the
+// model, which shows the reset button
+const fingers = new Map();   // pointerId -> where and when it went down
+let several = false;         // more than one finger since the first went down: a pinch, never a tap
 
 // LDraw's y points down: turned over, the model stands the right way up in three.js. The hands hold it: a picture
 // turned from the one before turns there, about the model's middle, the camera still
@@ -76,6 +88,7 @@ let drawn = -1;          // a picture just put on the stage, marked once it is d
 let turning = false;     // ?esittely: the page round it has said 'turn'
 let paused = false;      // ?esittely: and then 'pause', no frames drawn till the next 'turn'
 let stopped = false;     // the frames stopped, paused: the next 'turn' starts them again, once
+let picked = null;       // the tapped piece of the picture on the stage, drawn whole over the rest (drawPicked())
 
 function ease(t) {
   // smootherstep: still at both ends, its speed and acceleration rising and falling without a jolt, and never past
@@ -156,6 +169,8 @@ async function load(number, files = window.setFiles(number), open = Promise.reso
   canvas.style.opacity = '';
   hands.position.set(0, 0, 0);
   hands.quaternion.identity();
+  unpick();
+  $('steps').max = data.steps.length;
   $('loading').classList.add('gone');
   if (SHOT) return;
   const wanted = parseInt(location.hash.split('/')[1], 10) - 1;
@@ -337,11 +352,14 @@ function settle(c, done) {
   hands.position.set(0, 0, 0);
   hands.quaternion.identity();
   place(c.to);
+  $('home').hidden = true;
+  if (c.home) controls.autoRotate = data.steps[c.i].kind === 'finale';
   if (done) { change = null; canvas.style.opacity = ''; }
   if (onStage !== c.i || shown !== c.group) put(c.i, c.group, c.drop);
 }
 
 function put(i, group, drop) {
+  unpick();
   stage.clear();
   stage.add(group.parent);
   shown = group;
@@ -389,7 +407,8 @@ function label(i, pic) {
   $('num').textContent = finale ? '★' : i + 1;
   $('page').textContent = pic.pages ? `sivut ${pic.pages[0]}–${pic.pages[1]}` : 'Valmis kaivinkone';
   $('caption').textContent = pic.caption;
-  $('progress').style.width = `${100 * Math.min(i, total) / total}%`;
+  $('steps').value = i + 1;
+  $('steps').style.setProperty('--done', `${100 * Math.min(i, total) / total}%`);
   $('build').hidden = !pic.build;
   $('build').textContent = pic.build ? `Rakenna: ${pic.build}` : '';
   $('copies').hidden = !(pic.copies > 1);
@@ -404,10 +423,96 @@ function label(i, pic) {
 
 function step(by) {
   if (!data) return;
-  const i = at + by;
-  if (i < 0 || i >= data.steps.length) return;
+  go(at + by);
+}
+
+function go(i) {
+  if (i < 0 || i >= data.steps.length || i === at) return;
   mark(`asked ${i + 1}`);
   show(i).catch(fail);
+}
+
+function home() {
+  // back to the picture's own view, the booklet's, from where the reader has turned and zoomed it, as a camera move
+  if (!data || onStage < 0) return;
+  if (change) settle(change, true);
+  const from = currentView();
+  place(from);
+  const identity = new THREE.Matrix4();
+  change = { kind: 'move', i: onStage, group: shown, drop: false, to: bookletView(data.steps[onStage]), from,
+    end: bookletView(data.steps[onStage]), t0: performance.now(), ms: CAMERA_MS, handsFrom: identity, handsEnd: identity,
+    centre: shown.userData.middle.clone(), home: true };
+}
+
+function pick(x, y) {
+  // the piece of the picture on the stage under the screen's point (CSS px), the nearest, or none
+  if (!shown) return;
+  const ray = new THREE.Raycaster();
+  ray.setFromCamera(new THREE.Vector2(x / window.innerWidth * 2 - 1, 1 - y / window.innerHeight * 2), camera);
+  const faces = [];
+  shown.traverse(o => { if (o.isMesh && !o.isLineSegments2 && !o.userData.glassPass && o.layers.test(ray.layers)) faces.push(o); });
+  const hit = ray.intersectObjects(faces, false)[0];
+  let piece = hit?.object;
+  while (piece && piece.parent !== shown) piece = piece.parent;
+  if (!piece || piece === picked) unpick();
+  else choose(piece);
+}
+
+function choose(piece) {
+  unpick();
+  picked = piece;
+  piece.traverse(o => { if (o.layers.isEnabled(0)) o.layers.enable(PICKED); });   // not the outline's grown copies (outline.js)
+  piece.userData.glass = false;
+  piece.traverse(o => { if (o.isMesh && !o.isLineSegments2 && isGlass(o)) piece.userData.glass = true; });
+  const pic = data.steps[onStage];
+  const [file, colour] = pic.parts[piece.userData.index];
+  const key = `${file} ${colour}`;
+  const [number, name, total] = data.pieces[key] ?? [file.replace(/\.dat$/i, ''), '', 0];
+  const [word, value] = data.colourNames[colour] ?? ['', 'transparent'];
+  const here = pic.parts.filter(([f, c, , unit]) => unit >= 0 && `${f} ${c}` === key).length;
+  $('swatch').style.backgroundColor = value;
+  $('swatch').classList.toggle('glass', piece.userData.glass);
+  $('colour').textContent = word.charAt(0).toUpperCase() + word.slice(1);
+  $('shape').textContent = name;
+  $('counts').textContent = [here && piece.userData.unit >= 0 ? `tässä vaiheessa ${here}` : '', `mallissa ${total}`, `nro ${number}`]
+    .filter(Boolean).join(' · ');
+  $('piece').dataset.index = piece.userData.index;
+  $('piece').hidden = false;
+  document.body.classList.add('picking');
+}
+
+function unpick() {
+  picked?.traverse(o => o.layers.disable(PICKED));
+  picked = null;
+  $('piece').hidden = true;
+  document.body.classList.remove('picking');
+  delete $('piece').dataset.index;
+}
+
+// The model round a tapped piece veiled in the sky, then the piece drawn whole over it, where it is behind others too
+const veil = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.MeshBasicMaterial({ color: VEIL_COLOUR,
+  transparent: true, opacity: VEIL, depthTest: false, depthWrite: false, toneMapped: false }));
+const veilCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+// once over the nearest face: its glass's two passes and back faces would lay it on again and again
+const shade = new THREE.MeshBasicMaterial({ color: 0x1f2a33, transparent: true, opacity: GLASS_SHADE, depthFunc: THREE.LessDepth,
+  toneMapped: false });
+
+function drawPicked() {
+  if (!picked) return;
+  const mask = camera.layers.mask, autoClear = renderer.autoClear;
+  renderer.autoClear = false;
+  renderer.render(veil, veilCamera);
+  renderer.clearDepth();
+  camera.layers.set(PICKED);
+  renderer.render(scene, camera);
+  if (picked.userData.glass) {
+    renderer.clearDepth();
+    scene.overrideMaterial = shade;
+    renderer.render(scene, camera);
+    scene.overrideMaterial = null;
+  }
+  camera.layers.mask = mask;
+  renderer.autoClear = autoClear;
 }
 
 function tick(now) {
@@ -427,6 +532,7 @@ function tick(now) {
     renderer.render(scene, camera);
   }
   drawOutline(renderer, scene, camera, shown, Math.min(1, 1 - (now - outlineFades) / FADE_MS));
+  drawPicked();
   if (drawn >= 0) {
     mark(`shown ${drawn + 1}`);
     if (SHOW) window.parent.postMessage('3d:shown', location.origin);
@@ -520,6 +626,32 @@ window.shot = async (i, mode = 'all') => {
   return data.steps.length;
 };
 
+// tools/controls3d.cjs: the index of the piece the GPU draws nearest at each screen point ([x, y], CSS px) of the
+// picture on the stage as it is now, or -1: the pieces drawn in their id colours (idColour()) and read back, a judge of
+// pick()'s rays that shares nothing with them but the camera
+window.pieceAt = points => {
+  if (!shown) return points.map(() => -1);
+  const target = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight);
+  target.texture.colorSpace = THREE.SRGBColorSpace;
+  const swapped = shotLook(shown, 'ids');
+  const clearAlpha = renderer.getClearAlpha();
+  renderer.setClearAlpha(0);
+  renderer.setRenderTarget(target);
+  renderer.clear();
+  renderer.render(scene, camera);
+  const pixel = new Uint8Array(4);
+  const found = points.map(([x, y]) => {
+    renderer.readRenderTargetPixels(target, Math.floor(x), Math.floor(window.innerHeight - y), 1, 1, pixel);
+    const [r, g, b] = [...pixel].map(v => Math.round(v * (ID_LEVELS - 1) / 255));
+    return r * ID_LEVELS ** 2 + g * ID_LEVELS + b - 1;
+  });
+  renderer.setRenderTarget(null);
+  renderer.setClearAlpha(clearAlpha);
+  target.dispose();
+  for (const [o, material, visible] of swapped) { o.material = material; o.visible = visible; }
+  return found;
+};
+
 window.addEventListener('message', e => {
   if (!SHOW || e.origin !== location.origin || e.source !== window.parent) return;
   if (e.data === 'turn') {
@@ -532,9 +664,36 @@ window.addEventListener('message', e => {
 });
 $('prev').addEventListener('click', () => step(-1));
 $('next').addEventListener('click', () => step(1));
+$('home').addEventListener('click', home);
+$('unpick').addEventListener('click', unpick);
+// the slider shows the step it is on while it is dragged, and goes there when let go
+$('steps').addEventListener('input', e => {
+  const i = Number(e.target.value) - 1;
+  if (data) label(i, data.steps[i]);
+});
+$('steps').addEventListener('change', e => { if (data) go(Number(e.target.value) - 1); });
+canvas.addEventListener('pointerdown', e => {
+  several = fingers.size > 0;
+  fingers.set(e.pointerId, { x: e.clientX, y: e.clientY, t: performance.now() });
+});
+canvas.addEventListener('pointermove', e => {
+  const down = fingers.get(e.pointerId);
+  if (down && (several || Math.hypot(e.clientX - down.x, e.clientY - down.y) > TAP_PX)) $('home').hidden = SHOW || SHOT;
+});
+canvas.addEventListener('pointerup', e => {
+  const down = fingers.get(e.pointerId);
+  fingers.delete(e.pointerId);
+  if (!down || several || SHOW || SHOT) return;
+  if (Math.hypot(e.clientX - down.x, e.clientY - down.y) <= TAP_PX && performance.now() - down.t <= TAP_MS) pick(e.clientX, e.clientY);
+});
+canvas.addEventListener('pointercancel', e => fingers.delete(e.pointerId));
+canvas.addEventListener('wheel', () => { $('home').hidden = SHOW || SHOT; }, { passive: true });
 window.addEventListener('keydown', e => {
+  if (e.target === $('steps') || e.target === $('set')) return;   // their own keys move them
   if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); step(1); }
   if (e.key === 'ArrowLeft') step(-1);
+  if (e.key === 'Home') home();
+  if (e.key === 'Escape') unpick();
 });
 window.addEventListener('resize', resize);
 $('set').addEventListener('change', e => {
