@@ -5,17 +5,20 @@
 // rim, a soft band lit as a small rounded bevel catches the light (gloss.rs Lights::rim, mesh.rs rims()), drawn only
 // on its own piece. Glass filters what is behind it and adds its reflections. The constants are ldrender's
 // (NUMBER.json's look.gloss, `ldrender --gloss`). The model's shadow on itself and the occlusion of nearby pieces come
-// from light.js (ADR-0070).
+// from light.js (ADR-0070), and so does the model's shadow on the ground, which is drawn here (ADR-0076).
 import * as THREE from 'three';
 import { LineSegments2 } from 'three/addons/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
-import { SOLID, glsl as lightGlsl, setLight, uniforms as lightUniforms, updateLight } from './light.js';
+import { SOLID, ground, groundGlsl, groundUniforms, glsl as lightGlsl, setLight, uniforms as lightUniforms, updateLight }
+  from './light.js';
 
 const OFFSET_WIDTHS = 1.0;   // faces are pushed back by their depth across this many rim widths, so a rim lies on them
 const OFFSET_UNITS = 1.0;    // and this many of the depth buffer's steps, so a face square to the eye lies behind too
 const RIM_ORDER = 1;         // rims are drawn after the faces, which they lie on
+const GLASS_TINT_ORDER = -1; // glass's own colour over nothing, before any glass face filters what is behind it
 const GLASS_ADD_ORDER = 2;   // glass's reflections are added after what it filters
+const TINT_FLOOR = 1e-4;     // the least a channel of glass's colour is divided by: a channel it lets none of through
 const PIECE_IDS = 255;       // the stencil's values: a rim is drawn where its own piece is, its id one of these
 const WELD = 0.01;           // LDU: corners closer than this are one (mesh.rs WELD)
 const SAME_FACE = 0.999;     // two normals closer than this cosine are one face beside a line (mesh.rs SAME_FACE)
@@ -24,6 +27,8 @@ const CELL = 20.0;           // LDU: the grid cells a part's triangles are found
 
 let look = null;             // NUMBER.json's look
 let shared = null;           // the GLSL and uniforms every material shares, made from the look (setLook())
+// the finishes in the look's roughness's order, gloss.rs Finish's (web3d.look())
+const finishes = () => Object.keys(look.roughness);
 let widthPx = 1;             // a rim's width, device px
 const resolution = new THREE.Vector2(1, 1);   // the drawing buffer's size, px
 const faces = new Map();     // a loader's face material and the finish -> its gloss materials
@@ -47,8 +52,9 @@ function chunk(g) {
   const float WHITE = ${g.white.toFixed(6)};
   const float SHOULDER = ${g.shoulder.toFixed(6)};
   const float KEY_SPECULAR = ${g.keySpecular.toFixed(6)};
-  const float KEY_SIZE = ${g.keySize.toFixed(6)};
+  const float KEY_CORE = ${g.keyCore.toFixed(6)};
   const vec3 SURROUND_ABOVE = ${vec3(g.surroundAbove)};
+  const vec3 GLASS_SURROUND_ABOVE = ${vec3(g.glassSurroundAbove)};
   const vec3 SURROUND_BELOW = ${vec3(g.surroundBelow)};
   const float SQUARE_ON = ${g.squareOn.toFixed(6)};
   const float GRAZING = ${g.grazing.toExponential(6)};
@@ -56,31 +62,29 @@ function chunk(g) {
   const float SHADOW_FADE = ${g.shadowFade.toFixed(6)};
   ${lightGlsl(g.occlusion)}
   #define ARC_STEPS ${g.arcSteps}
+  // the material's finish, as its index in the look's roughness (gloss.rs Finish's order)
+  uniform float finish;
+  const float GLASS = ${finishes().indexOf('glass')}.0;
+  const float RUBBER = ${finishes().indexOf('rubber')}.0;
 
   float lum709(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }   // Rec. 709's, of linear light
   float toSrgb(float v) { return v <= 0.0031308 ? v * 12.92 : 1.055 * pow(v, 1.0 / 2.4) - 0.055; }   // IEC 61966-2-1
   vec3 toSrgb(vec3 v) { return vec3(toSrgb(v.r), toSrgb(v.g), toSrgb(v.b)); }
   float tone(float x) { x = clamp(x, 0.0, WHITE); return x * (WHITE + SHOULDER) / (WHITE * (x + SHOULDER)); }
 
-  vec3 encode(vec3 lit) {
-    float y = lum709(lit);
-    vec3 toned = lit * (y > 0.0 ? tone(y) / y : 0.0);
-    float ty = tone(y);
-    float top = max(toned.r, max(toned.g, toned.b));
-    float towardsGrey = top > 1.0 ? (1.0 - ty) / (top - ty) : 1.0;
-    return toSrgb(clamp(ty + (toned - ty) * towardsGrey, 0.0, 1.0));
-  }
+  vec3 encode(vec3 lit) { return toSrgb(vec3(tone(lit.r), tone(lit.g), tone(lit.b))); }
 
   // the surround mirrored, the key box's highlight, and how much light gets through to the colour (gloss.rs specular())
   void specular(vec3 n, float rough, out vec3 surround, out float highlight, out float through) {
     float nv = max(dot(n, TO_EYE), GRAZING);
     float fresnel = SQUARE_ON + (max(1.0 - rough, SQUARE_ON) - SQUARE_ON) * pow(1.0 - nv, 5.0);
     vec3 mirror = n * 2.0 * nv - TO_EYE;
-    surround = fresnel * mix(SURROUND_BELOW, SURROUND_ABOVE, (dot(mirror, upDir) + 1.0) / 2.0);
-    float wide = min(rough * rough + KEY_SIZE, 1.0);
+    vec3 above = finish == GLASS ? GLASS_SURROUND_ABOVE : SURROUND_ABOVE;
+    surround = fresnel * mix(SURROUND_BELOW, above, (dot(mirror, upDir) + 1.0) / 2.0);
+    float wide = min(rough * rough + KEY_CORE, 1.0);
     float nl = dot(n, keyDir);
     highlight = 0.0;
-    if (nl > 0.0) {
+    if (nl > 0.0 && finish != RUBBER) {
       vec3 h = normalize(keyDir + TO_EYE);
       float nh = max(dot(n, h), 0.0);
       float a2 = wide * wide;
@@ -144,23 +148,51 @@ export function setLook(given) {
   shared = { glsl: chunk(given.gloss), keyDir: { value: new THREE.Vector3(0, 0, 1) }, upDir: { value: new THREE.Vector3(0, 1, 0) } };
   faces.clear();
   rimLooks.clear();
+  ground.material.dispose();
+  ground.material = groundMaterial(given.gloss);
+}
+
+// The ground as the traced cover's shadow catcher shows it (trace.rs caught(), pixel()): the paper's white times the
+// share of the light it keeps, tone mapped, laid on the page as black of the opacity that darkens white paper to it,
+// none fainter than the catcher's haze: over the page's blue, it darkens the blue as much
+function groundMaterial(g) {
+  return new THREE.ShaderMaterial({
+    uniforms: groundUniforms,
+    vertexShader: /* glsl */`
+      varying vec3 vWorld;
+      void main() {
+        vec4 world = modelMatrix * vec4(position, 1.0);
+        vWorld = world.xyz;
+        gl_Position = projectionMatrix * viewMatrix * world;
+      }`,
+    fragmentShader: `${shared.glsl}
+      ${groundGlsl(g.catcher)}
+      const float HAZE = ${g.catcher.haze.toFixed(6)};
+      varying vec3 vWorld;
+      void main() {
+        vec3 shown = encode(vec3(WHITE * groundShare(vWorld)));
+        float alpha = 1.0 - min(shown.r, min(shown.g, shown.b));
+        gl_FragColor = vec4(0.0, 0.0, 0.0, alpha < HAZE ? 0.0 : alpha);
+      }`,
+    transparent: true, depthWrite: false, toneMapped: false,
+  });
 }
 
 function finish(m, tyre) {
-  // a material's roughness by its finish: glass and rubber by the colour's LDConfig name, a tyre rubber whatever its colour
-  if (tyre || m.name.startsWith(look.gloss.rubber)) return look.roughness.rubber;
-  if (m.name.startsWith(look.gloss.glass)) return look.roughness.glass;
-  return look.roughness.plastic;
+  // a material's finish: glass and rubber by the colour's LDConfig name, a tyre rubber whatever its colour
+  if (tyre || m.name.startsWith(look.gloss.rubber)) return 'rubber';
+  return m.name.startsWith(look.gloss.glass) ? 'glass' : 'plastic';
 }
 
-function uniforms(m, rough) {
-  return { base: { value: new THREE.Vector3(m.color.r, m.color.g, m.color.b) }, rough: { value: rough },
+function uniforms(m, done) {
+  return { base: { value: new THREE.Vector3(m.color.r, m.color.g, m.color.b) }, rough: { value: look.roughness[done] },
+    finish: { value: finishes().indexOf(done) },
     keyDir: shared.keyDir, upDir: shared.upDir, ...lightUniforms };
 }
 
-function opaque(m, rough) {
+function opaque(m, done) {
   const material = new THREE.ShaderMaterial({
-    uniforms: uniforms(m, rough), vertexShader: FACE_VERTEX,
+    uniforms: uniforms(m, done), vertexShader: FACE_VERTEX,
     fragmentShader: `${shared.glsl}
       ${FACING}
       uniform vec3 base;
@@ -178,12 +210,17 @@ function opaque(m, rough) {
   return material;
 }
 
-// Glass as a filter (gloss.rs glass()), in two passes: what is behind multiplied by what it lets through of its colour,
-// then its own reflections added. Over nothing it leaves the page showing through by as much as it lets through.
-function glass(m, rough) {
+// Glass as a filter (gloss.rs glass()), in three passes. First, where nothing is behind it (the canvas is transparent),
+// the glass's colour as the filter of white paper (gloss.rs Glass::over()): that colour less its least channel,
+// premultiplied, divided by the colour, as the multiply that follows takes it back to the colour; and its least
+// channel let through, so that the page behind shows tinted by it rather than darkened (#237). Each glass face lays
+// one; over a piece the canvas is opaque and it lays nothing. Then what is behind is multiplied by what the glass
+// lets through of its colour, and its own reflections are added. Exact over white for one face and for clear glass;
+// a piece seen through several faces comes out a little deeper than their product.
+function glass(m, done) {
   const pass = (name, out, blend) => {
     const material = new THREE.ShaderMaterial({
-      uniforms: uniforms(m, rough), vertexShader: FACE_VERTEX,
+      uniforms: uniforms(m, done), vertexShader: FACE_VERTEX,
       fragmentShader: `${shared.glsl}
         ${FACING}
         uniform vec3 base;
@@ -201,19 +238,25 @@ function glass(m, rough) {
     material.userData = { ...m.userData, glassPass: name };
     return material;
   };
+  // the multiply first, which the piece's own mesh draws; the others are drawn in their order (asGloss())
   return [
-    pass('filter', 'gl_FragColor = vec4(toSrgb(filtered), 1.0 - lum709(filtered));',
-      { blendSrc: THREE.ZeroFactor, blendDst: THREE.SrcColorFactor, blendSrcAlpha: THREE.OneFactor,
-        blendDstAlpha: THREE.OneMinusSrcAlphaFactor }),
+    pass('filter', 'gl_FragColor = vec4(toSrgb(filtered), 0.0);',
+      { blendSrc: THREE.ZeroFactor, blendDst: THREE.SrcColorFactor, blendSrcAlpha: THREE.ZeroFactor,
+        blendDstAlpha: THREE.OneFactor }),
+    pass('tint', `vec3 tint = toSrgb(filtered);
+          float least = min(tint.r, min(tint.g, tint.b));
+          gl_FragColor = vec4(1.0 - least / max(tint, vec3(${TINT_FLOOR.toExponential(6)})), 1.0 - least);`,
+      { blendSrc: THREE.OneMinusDstAlphaFactor, blendDst: THREE.OneFactor, blendSrcAlpha: THREE.OneMinusDstAlphaFactor,
+        blendDstAlpha: THREE.OneFactor }),
     pass('reflect', 'gl_FragColor = vec4(surround + highlight, 0.0);',
       { blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor, blendSrcAlpha: THREE.ZeroFactor, blendDstAlpha: THREE.OneFactor }),
   ];
 }
 
 function faceLook(m, tyre) {
-  const rough = finish(m, tyre);
-  const key = `${m.id} ${rough}`;
-  if (!faces.has(key)) faces.set(key, m.transparent ? glass(m, rough) : [opaque(m, rough)]);
+  const done = finish(m, tyre);
+  const key = `${m.id} ${done}`;
+  if (!faces.has(key)) faces.set(key, m.transparent ? glass(m, done) : [opaque(m, done)]);
   return faces.get(key);
 }
 
@@ -352,13 +395,14 @@ function rimGeometries(faceGeometry, lineGeometry) {
 
 function rimLook(m, tyre) {
   // a rim's material: LineMaterial's band, a rim width wide, lit as a bevel turning from one face's normal to the other's
-  const rough = finish(m, tyre);
-  const key = `${m.color.getHexString()} ${rough}`;
+  const done = finish(m, tyre);
+  const key = `${m.color.getHexString()} ${done}`;
   if (!rimLooks.has(key)) {
     const material = new LineMaterial({ linewidth: widthPx, transparent: true, depthWrite: false, toneMapped: false });
     material.resolution = resolution;
     material.uniforms.base = { value: new THREE.Vector3(m.color.r, m.color.g, m.color.b) };
-    material.uniforms.rough = { value: rough };
+    material.uniforms.rough = { value: look.roughness[done] };
+    material.uniforms.finish = { value: finishes().indexOf(done) };
     material.uniforms.keyDir = shared.keyDir;
     material.uniforms.upDir = shared.upDir;
     Object.assign(material.uniforms, lightUniforms);
@@ -423,12 +467,15 @@ export function asGloss(piece, n, tyre) {
     const materials = original.map(m => faceLook(m, tyre));
     const multi = Array.isArray(o.material);
     o.material = multi ? materials.map(([first]) => first) : materials[0][0];
-    if (!multi && materials[0].length > 1) {
-      // glass's second pass: its reflections, added over what it filters
-      const reflect = new THREE.Mesh(o.geometry, materials[0][1]);
-      reflect.renderOrder = GLASS_ADD_ORDER;
-      reflect.userData.glassPass = true;
-      o.add(reflect);
+    if (!multi) {
+      // glass's other passes: its colour over nothing, before what it filters, and its reflections, after
+      for (const [material, order] of [[materials[0][1], GLASS_TINT_ORDER], [materials[0][2], GLASS_ADD_ORDER]]) {
+        if (!material) continue;
+        const later = new THREE.Mesh(o.geometry, material);
+        later.renderOrder = order;
+        later.userData.glassPass = true;
+        o.add(later);
+      }
     }
     marked(o, id);
     if (!original.some(m => m.transparent)) o.layers.enable(SOLID);   // it casts a shadow and hides the sky
