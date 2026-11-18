@@ -5,17 +5,20 @@
 // rim, a soft band lit as a small rounded bevel catches the light (gloss.rs Lights::rim, mesh.rs rims()), drawn only
 // on its own piece. Glass filters what is behind it and adds its reflections. The constants are ldrender's
 // (NUMBER.json's look.gloss, `ldrender --gloss`). The model's shadow on itself and the occlusion of nearby pieces come
-// from light.js (ADR-0070).
+// from light.js (ADR-0070), and so does the model's shadow on the ground, which is drawn here (ADR-0076).
 import * as THREE from 'three';
 import { LineSegments2 } from 'three/addons/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
-import { SOLID, glsl as lightGlsl, setLight, uniforms as lightUniforms, updateLight } from './light.js';
+import { SOLID, ground, groundGlsl, groundUniforms, glsl as lightGlsl, setLight, uniforms as lightUniforms, updateLight }
+  from './light.js';
 
 const OFFSET_WIDTHS = 1.0;   // faces are pushed back by their depth across this many rim widths, so a rim lies on them
 const OFFSET_UNITS = 1.0;    // and this many of the depth buffer's steps, so a face square to the eye lies behind too
 const RIM_ORDER = 1;         // rims are drawn after the faces, which they lie on
+const GLASS_TINT_ORDER = -1; // glass's own colour over nothing, before any glass face filters what is behind it
 const GLASS_ADD_ORDER = 2;   // glass's reflections are added after what it filters
+const TINT_FLOOR = 1e-4;     // the least a channel of glass's colour is divided by: a channel it lets none of through
 const PIECE_IDS = 255;       // the stencil's values: a rim is drawn where its own piece is, its id one of these
 const WELD = 0.01;           // LDU: corners closer than this are one (mesh.rs WELD)
 const SAME_FACE = 0.999;     // two normals closer than this cosine are one face beside a line (mesh.rs SAME_FACE)
@@ -144,6 +147,34 @@ export function setLook(given) {
   shared = { glsl: chunk(given.gloss), keyDir: { value: new THREE.Vector3(0, 0, 1) }, upDir: { value: new THREE.Vector3(0, 1, 0) } };
   faces.clear();
   rimLooks.clear();
+  ground.material.dispose();
+  ground.material = groundMaterial(given.gloss);
+}
+
+// The ground as the traced cover's shadow catcher shows it (trace.rs caught(), pixel()): the paper's white times the
+// share of the light it keeps, tone mapped, laid on the page as black of the opacity that darkens white paper to it,
+// none fainter than the catcher's haze: over the page's blue, it darkens the blue as much
+function groundMaterial(g) {
+  return new THREE.ShaderMaterial({
+    uniforms: groundUniforms,
+    vertexShader: /* glsl */`
+      varying vec3 vWorld;
+      void main() {
+        vec4 world = modelMatrix * vec4(position, 1.0);
+        vWorld = world.xyz;
+        gl_Position = projectionMatrix * viewMatrix * world;
+      }`,
+    fragmentShader: `${shared.glsl}
+      ${groundGlsl(g.catcher)}
+      const float HAZE = ${g.catcher.haze.toFixed(6)};
+      varying vec3 vWorld;
+      void main() {
+        vec3 shown = encode(vec3(WHITE * groundShare(vWorld)));
+        float alpha = 1.0 - min(shown.r, min(shown.g, shown.b));
+        gl_FragColor = vec4(0.0, 0.0, 0.0, alpha < HAZE ? 0.0 : alpha);
+      }`,
+    transparent: true, depthWrite: false, toneMapped: false,
+  });
 }
 
 function finish(m, tyre) {
@@ -178,8 +209,13 @@ function opaque(m, rough) {
   return material;
 }
 
-// Glass as a filter (gloss.rs glass()), in two passes: what is behind multiplied by what it lets through of its colour,
-// then its own reflections added. Over nothing it leaves the page showing through by as much as it lets through.
+// Glass as a filter (gloss.rs glass()), in three passes. First, where nothing is behind it (the canvas is transparent),
+// the glass's colour as the filter of white paper (gloss.rs Glass::over()): that colour less its least channel,
+// premultiplied, divided by the colour, as the multiply that follows takes it back to the colour; and its least
+// channel let through, so that the page behind shows tinted by it rather than darkened (#237). Each glass face lays
+// one; over a piece the canvas is opaque and it lays nothing. Then what is behind is multiplied by what the glass
+// lets through of its colour, and its own reflections are added. Exact over white for one face and for clear glass;
+// a piece seen through several faces comes out a little deeper than their product.
 function glass(m, rough) {
   const pass = (name, out, blend) => {
     const material = new THREE.ShaderMaterial({
@@ -201,10 +237,16 @@ function glass(m, rough) {
     material.userData = { ...m.userData, glassPass: name };
     return material;
   };
+  // the multiply first, which the piece's own mesh draws; the others are drawn in their order (asGloss())
   return [
-    pass('filter', 'gl_FragColor = vec4(toSrgb(filtered), 1.0 - lum709(filtered));',
-      { blendSrc: THREE.ZeroFactor, blendDst: THREE.SrcColorFactor, blendSrcAlpha: THREE.OneFactor,
-        blendDstAlpha: THREE.OneMinusSrcAlphaFactor }),
+    pass('filter', 'gl_FragColor = vec4(toSrgb(filtered), 0.0);',
+      { blendSrc: THREE.ZeroFactor, blendDst: THREE.SrcColorFactor, blendSrcAlpha: THREE.ZeroFactor,
+        blendDstAlpha: THREE.OneFactor }),
+    pass('tint', `vec3 tint = toSrgb(filtered);
+          float least = min(tint.r, min(tint.g, tint.b));
+          gl_FragColor = vec4(1.0 - least / max(tint, vec3(${TINT_FLOOR.toExponential(6)})), 1.0 - least);`,
+      { blendSrc: THREE.OneMinusDstAlphaFactor, blendDst: THREE.OneFactor, blendSrcAlpha: THREE.OneMinusDstAlphaFactor,
+        blendDstAlpha: THREE.OneFactor }),
     pass('reflect', 'gl_FragColor = vec4(surround + highlight, 0.0);',
       { blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor, blendSrcAlpha: THREE.ZeroFactor, blendDstAlpha: THREE.OneFactor }),
   ];
@@ -423,12 +465,15 @@ export function asGloss(piece, n, tyre) {
     const materials = original.map(m => faceLook(m, tyre));
     const multi = Array.isArray(o.material);
     o.material = multi ? materials.map(([first]) => first) : materials[0][0];
-    if (!multi && materials[0].length > 1) {
-      // glass's second pass: its reflections, added over what it filters
-      const reflect = new THREE.Mesh(o.geometry, materials[0][1]);
-      reflect.renderOrder = GLASS_ADD_ORDER;
-      reflect.userData.glassPass = true;
-      o.add(reflect);
+    if (!multi) {
+      // glass's other passes: its colour over nothing, before what it filters, and its reflections, after
+      for (const [material, order] of [[materials[0][1], GLASS_TINT_ORDER], [materials[0][2], GLASS_ADD_ORDER]]) {
+        if (!material) continue;
+        const later = new THREE.Mesh(o.geometry, material);
+        later.renderOrder = order;
+        later.userData.glassPass = true;
+        o.add(later);
+      }
     }
     marked(o, id);
     if (!original.some(m => m.transparent)) o.layers.enable(SOLID);   // it casts a shadow and hides the sky

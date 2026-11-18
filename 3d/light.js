@@ -4,13 +4,26 @@
 // point's own face's plane), which takes the key's light and highlight; and its ambient occlusion
 // (renderer/src/occlusion.rs: rays marched into the half of the sky a face's normal faces, hidden where a step along
 // one is behind the picture's surface there, blurred over a tile within a face), which takes the light its colour gives
-// back of the key and the sky. Both are worked out again only when the camera or a piece moves. The constants are
-// ldrender's (NUMBER.json's look.gloss.shadow and .occlusion, `ldrender --gloss`).
+// back of the key and the sky. Both are worked out again only when the camera or a piece moves. And the model's shadow
+// on the ground (ADR-0076), as the traced cover's shadow catcher has it (renderer/src/trace.rs World::caught()): the
+// share of the sun's and the sky's light the model hides from each point of the ground at its lowest point, from rays
+// marched through the model's top and bottom seen straight down and up; the sky's worked out again when a piece moves,
+// the sun's when the camera does too, as it follows the camera. look.js draws the ground as a darkening of the page.
+// The constants are ldrender's (NUMBER.json's look.gloss.shadow, .occlusion and .catcher, `ldrender --gloss`).
 import * as THREE from 'three';
 
 export const SOLID = 4;      // the layer of the pieces' opaque faces: what casts a shadow and hides the sky (glass doesn't)
 const PAGE_MAX_SIDE = 2048;  // texels: the shadow map's side at most on the page, a phone's memory (ldrender: 4096)
 const LIGHT_ROOM = 2.0;      // the light's camera stands this many times the model's radius from its middle
+const GROUND_REACH = 3.0;    // the ground's shares are worked out this many model radii round where its shadow falls:
+                             // past it the model hides less of the sky than the catcher's haze shows
+const GROUND_SIDE = 128;     // texels: a side of the ground's shares, which change slowly over it
+const HEIGHT_SIDE = 256;     // texels: a side of the model's top and bottom seen straight down and up
+const SKY_RAYS = 64;         // rays a point of the ground sends into the sky, cosine weighted (trace.rs caught())
+const SUN_RAYS = 32;         // and into the sun's disc, uniform over it (trace.rs Sun::sample())
+const STEPS = 32;            // steps along each ray, closer together near the ground
+const HEIGHT_ROOM = 1.0;     // LDU: the top and bottom cameras stand this far beyond the model
+const GROUND_ORDER = -2;     // the ground is darkened before glass lays its tint over it (look.js GLASS_TINT_ORDER)
 
 const quadCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 const QUAD_VERTEX = /* glsl */`
@@ -25,9 +38,43 @@ export const uniforms = { lightMap: { value: null }, lightDepthMap: { value: nul
 let constants = null;   // NUMBER.json's look.gloss
 let targets = null;
 let signature = '';
+let skySignature = '';
+
+// The ground under the model, facing up (seen only from above), as large as the shares worked out over it: look.js
+// gives it its material (groundMaterial()), from these uniforms and groundGlsl()
+const plane = new THREE.PlaneGeometry(2, 2);
+plane.rotateX(-Math.PI / 2);
+export const ground = new THREE.Mesh(plane);
+ground.renderOrder = GROUND_ORDER;
+ground.visible = false;
+export const groundUniforms = { skyTex: { value: null }, sunTex: { value: null }, worldToSky: { value: new THREE.Matrix4() },
+  worldToSun: { value: new THREE.Matrix4() }, sunLight: { value: 0 } };
 
 const asInt = v => Math.round(v);
 const f = v => Number(v).toFixed(6);
+// the sky's radiance as one grey (Rec. 709's luminance of linear light): the ground is drawn as a darkening, not a tint
+const grey = ([r, g, b]) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
+
+// GLSL for the ground's shader: groundShare(), the share of the paper's light the ground keeps at a world point, as
+// trace.rs caught() weighs the sun's and the sky's shares the model leaves it by their light
+export function groundGlsl(c) {
+  return /* glsl */`
+  uniform sampler2D skyTex;
+  uniform sampler2D sunTex;
+  uniform mat4 worldToSky;
+  uniform mat4 worldToSun;
+  uniform float sunLight;     // the sun's irradiance on the open ground
+  const float SKY_LIGHT = ${f(Math.PI * grey(c.sky))};   // a cosine-weighted sky brings pi times its radiance
+  float shareAt(sampler2D tex, mat4 toTex, vec3 world) {
+    vec4 p = toTex * vec4(world, 1.0);
+    vec2 uv = p.xy / p.w * 0.5 + 0.5;
+    return uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0 ? 1.0 : texture2D(tex, uv).r;
+  }
+  float groundShare(vec3 world) {
+    float sun = shareAt(sunTex, worldToSun, world), sky = shareAt(skyTex, worldToSky, world);
+    return (sunLight * sun + SKY_LIGHT * sky) / (sunLight + SKY_LIGHT);
+  }`;
+}
 
 // GLSL of the shadow (shadow.rs Shadow::share()): seen(), the share of the key box a point p with normal n (the view's
 // axes) sees past the model, its taps turned by the pixel at px
@@ -244,6 +291,84 @@ function occlusionPasses(o, shadow) {
   return { rays, blur };
 }
 
+// A share of the ground's light the model leaves each point of a square of the ground (squareToWorld: from the square's
+// clip space), from rays marched through the model's top and bottom (inside(): below its top and above its bottom
+// there) where they cross its bounding cylinder: the sky's, drawn cosine weighted, or the sun's, drawn uniform over its
+// disc round sunDir and weighted by its cosine on the ground
+function groundPass(rays, direction, weight) {
+  return pass(/* glsl */`
+    uniform sampler2D topDepth;
+    uniform sampler2D bottomDepth;
+    uniform mat4 worldToTop;
+    uniform mat4 worldToBottom;
+    uniform mat4 squareToWorld;
+    uniform vec2 heights;      // the top and bottom cameras' heights, world y
+    uniform vec2 heightDepth;  // their near and far, LDU
+    uniform float groundY;
+    uniform vec2 centre;       // the model's middle, world x and z
+    uniform float radius;      // LDU: its bounding sphere's
+    uniform vec3 sunDir;       // world, towards the sun
+    uniform float sunCos;      // the cosine of the sun's radius
+    varying vec2 vUv;
+    const float GOLDEN = 2.399963229728653;
+    const float STEEP = 1e-3;  // a ray spreading less than this across the ground is taken as straight up
+    #define RAYS ${rays}
+    #define STEPS ${STEPS}
+    // LDU from a camera to the model along its look at world point q, or -1 where none is
+    float seenAt(sampler2D depth, mat4 toCamera, vec3 q) {
+      vec4 c = toCamera * vec4(q, 1.0);
+      vec2 uv = c.xy / c.w * 0.5 + 0.5;
+      if (uv.x < 0.0 || uv.y < 0.0 || uv.x >= 1.0 || uv.y >= 1.0) return -1.0;
+      float d = texture2D(depth, uv).r;
+      return d >= 1.0 ? -1.0 : mix(heightDepth.x, heightDepth.y, d);
+    }
+    bool inside(vec3 q) {
+      float top = seenAt(topDepth, worldToTop, q), bottom = seenAt(bottomDepth, worldToBottom, q);
+      return top >= 0.0 && bottom >= 0.0 && q.y <= heights.x - top && q.y >= heights.y + bottom;
+    }
+    vec3 around(vec3 axis, float cosine, float a) {
+      vec3 other = abs(axis.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+      vec3 x = normalize(cross(axis, other)), y = cross(axis, x);
+      float sine = sqrt(max(1.0 - cosine * cosine, 0.0));
+      return axis * cosine + (x * cos(a) + y * sin(a)) * sine;
+    }
+    void main() {
+      vec4 w = squareToWorld * vec4(vUv * 2.0 - 1.0, 0.0, 1.0);
+      vec3 g = vec3(w.x / w.w, groundY, w.z / w.w);
+      float rise = heights.x - groundY;
+      vec2 from = g.xz - centre;
+      float open = 0.0, all = 0.0;
+      for (int k = 0; k < RAYS; k++) {
+        float u = (float(k) + 0.5) / float(RAYS), a = GOLDEN * float(k);
+        vec3 d = ${direction};
+        if (d.y <= 0.0) continue;
+        // only where the ray is within the model's bounding cylinder and below its top can the model hide it
+        float r2 = dot(d.xz, d.xz), b = dot(from, d.xz), c = dot(from, from) - radius * radius;
+        float enter = 0.0, leave = rise / d.y;
+        if (r2 > STEEP * STEEP) {
+          float disc = b * b - r2 * c;
+          if (disc < 0.0) leave = 0.0;
+          else {
+            enter = max((-b - sqrt(disc)) / r2, 0.0);
+            leave = min((-b + sqrt(disc)) / r2, leave);
+          }
+        } else if (c > 0.0) leave = 0.0;
+        bool hidden = false;
+        for (int s = 0; s < STEPS && enter < leave; s++) {
+          float t = (float(s) + 0.5) / float(STEPS);
+          if (inside(g + d * mix(enter, leave, t * t))) { hidden = true; break; }
+        }
+        all += ${weight};
+        if (!hidden) open += ${weight};
+      }
+      gl_FragColor = vec4(all > 0.0 ? open / all : 1.0, 0.0, 0.0, 1.0);
+    }`, { topDepth: { value: null }, bottomDepth: { value: null }, worldToTop: { value: new THREE.Matrix4() },
+    worldToBottom: { value: new THREE.Matrix4() }, squareToWorld: { value: new THREE.Matrix4() },
+    heights: { value: new THREE.Vector2() }, heightDepth: { value: new THREE.Vector2() }, groundY: { value: 0 },
+    centre: { value: new THREE.Vector2() }, radius: { value: 1 }, sunDir: { value: new THREE.Vector3(0, 1, 0) },
+    sunCos: { value: 1 } });
+}
+
 function nearest(w, h, depth) {
   const t = new THREE.WebGLRenderTarget(w, h, { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
     depthBuffer: depth, depthTexture: depth ? new THREE.DepthTexture(w, h, THREE.UnsignedIntType) : null });
@@ -256,10 +381,19 @@ export function setLight(gloss) {
   if (constants && JSON.stringify(constants) === JSON.stringify(gloss)) return;
   constants = gloss;
   if (targets) for (const t of targets.all) t.dispose();
-  const shadow = nearest(1, 1, true);
-  targets = { shadow, normal: null, raw: null, open: null, passes: occlusionPasses(gloss.occlusion, gloss.shadow), all: [shadow],
+  const shadow = nearest(1, 1, true), top = nearest(HEIGHT_SIDE, HEIGHT_SIDE, true), bottom = nearest(HEIGHT_SIDE, HEIGHT_SIDE, true);
+  const share = () => new THREE.WebGLRenderTarget(GROUND_SIDE, GROUND_SIDE, { depthBuffer: false });
+  const sky = share(), sun = share();
+  const kept = [shadow, top, bottom, sky, sun];
+  targets = { shadow, top, bottom, sky, sun, kept, normal: null, raw: null, open: null, all: kept,
+    passes: { ...occlusionPasses(gloss.occlusion, gloss.shadow),
+      // the sky cosine weighted; the sun's disc uniform in solid angle, as trace.rs Sun::sample() draws it
+      sky: groundPass(SKY_RAYS, 'vec3(sqrt(u) * cos(a), sqrt(1.0 - u), sqrt(u) * sin(a))', '1.0'),
+      sun: groundPass(SUN_RAYS, 'around(sunDir, 1.0 - u * (1.0 - sunCos), a)', 'd.y') },
     prepass: normals(), depthOnly: new THREE.MeshBasicMaterial({ colorWrite: false, side: THREE.DoubleSide }) };
-  signature = '';
+  groundUniforms.skyTex.value = sky.texture;
+  groundUniforms.sunTex.value = sun.texture;
+  signature = skySignature = '';
 }
 
 function occlusionTargets(w, h) {
@@ -268,7 +402,7 @@ function occlusionTargets(w, h) {
   targets.normal = nearest(w, h, true);
   targets.raw = nearest(w, h, false);
   targets.open = nearest(w, h, false);
-  targets.all = [targets.shadow, targets.normal, targets.raw, targets.open];
+  targets.all = [...targets.kept, targets.normal, targets.raw, targets.open];
 }
 
 function drawn(renderer, scene, camera, target, material) {
@@ -292,6 +426,104 @@ function stateOf(camera, group, buffer) {
   group.updateWorldMatrix(true, false);
   return [...camera.matrixWorld.elements, ...camera.projectionMatrix.elements, ...group.matrixWorld.elements, ...places,
     buffer.x, buffer.y].map(v => v.toFixed(3)).join();
+}
+
+function placesOf(group) {
+  // what the sky's share of the ground depends on: where the pieces are
+  const places = [];
+  group.traverse(o => { if (o.parent === group) places.push(o.position.x, o.position.y, o.position.z); });
+  group.updateWorldMatrix(true, true);
+  return [...group.matrixWorld.elements, ...places].map(v => v.toFixed(3)).join();
+}
+
+function solidBox(group) {
+  // the box round the opaque faces (what stands on the ground and hides the light), world
+  const box = new THREE.Box3(), part = new THREE.Box3();
+  group.traverse(o => {
+    if (!o.isMesh || !o.layers.isEnabled(SOLID)) return;
+    if (!o.geometry.boundingBox) o.geometry.computeBoundingBox();
+    box.union(part.copy(o.geometry.boundingBox).applyMatrix4(o.matrixWorld));
+  });
+  return box;
+}
+
+function looking(camera, from, to, up) {
+  camera.position.copy(from);
+  camera.up.copy(up);
+  camera.lookAt(to);
+  camera.updateMatrixWorld();
+  camera.updateProjectionMatrix();
+  return camera;
+}
+
+const toCamera = c => new THREE.Matrix4().multiplyMatrices(c.projectionMatrix, c.matrixWorldInverse);
+const NORTH = new THREE.Vector3(0, 0, -1);   // the top of the pictures taken straight down or up
+
+function square(at, y, half) {
+  // a square of the ground round at (x, z), as a camera straight down on it sees it
+  const c = new THREE.OrthographicCamera(-half, half, half, -half, 0, 1);
+  return looking(c, new THREE.Vector3(at.x, y + 1, at.z), new THREE.Vector3(at.x, y, at.z), NORTH);
+}
+
+function drawShare(renderer, step, target, place) {
+  const u = step.uniforms, g = ground.userData;
+  u.topDepth.value = targets.top.depthTexture;
+  u.bottomDepth.value = targets.bottom.depthTexture;
+  u.worldToTop.value.copy(g.worldToTop);
+  u.worldToBottom.value.copy(g.worldToBottom);
+  u.squareToWorld.value.copy(place).invert();
+  u.heights.value.copy(g.heights);
+  u.heightDepth.value.copy(g.heightDepth);
+  u.groundY.value = g.box.min.y;
+  u.centre.value.set(g.sphere.center.x, g.sphere.center.z);
+  u.radius.value = g.sphere.radius;
+  renderer.setRenderTarget(target);
+  renderer.render(step.scene, quadCamera);
+}
+
+function catchSky(renderer, scene, group) {
+  // the ground at the model's lowest point, the model's top and bottom over it, and the sky's share of the ground round
+  // the model; no ground where there is no model
+  const box = solidBox(group);
+  ground.visible = !box.isEmpty();
+  if (!ground.visible) return;
+  const sphere = box.getBoundingSphere(new THREE.Sphere()), c = sphere.center, r = sphere.radius;
+  const depth = box.max.y - box.min.y + 2 * HEIGHT_ROOM;
+  const top = looking(new THREE.OrthographicCamera(-r, r, r, -r, 0, depth), new THREE.Vector3(c.x, box.max.y + HEIGHT_ROOM, c.z),
+    new THREE.Vector3(c.x, box.min.y, c.z), NORTH);
+  const bottom = looking(new THREE.OrthographicCamera(-r, r, r, -r, 0, depth), new THREE.Vector3(c.x, box.min.y - HEIGHT_ROOM, c.z),
+    new THREE.Vector3(c.x, box.max.y, c.z), NORTH);
+  drawn(renderer, scene, top, targets.top, targets.depthOnly);
+  drawn(renderer, scene, bottom, targets.bottom, targets.depthOnly);
+  const sky = toCamera(square(c, box.min.y, r * GROUND_REACH));
+  Object.assign(ground.userData, { box, sphere, worldToTop: toCamera(top), worldToBottom: toCamera(bottom),
+    heights: new THREE.Vector2(top.position.y, bottom.position.y), heightDepth: new THREE.Vector2(0, depth) });
+  drawShare(renderer, targets.passes.sky, targets.sky, sky);
+  groundUniforms.worldToSky.value.copy(sky);
+}
+
+function catchSun(renderer, camera, keyView) {
+  // the sun's share of the ground, round where the model's shadow falls along the key, which follows the camera; and
+  // the ground as large as both shares
+  if (!ground.visible) return;
+  const { box, sphere } = ground.userData;
+  const key = keyView.clone().transformDirection(camera.matrixWorld);
+  const reach = sphere.radius * GROUND_REACH;
+  const rise = sphere.center.y - box.min.y;
+  // where the key casts the model's middle, at most reach from under it
+  const fall = new THREE.Vector2(-key.x, -key.z).multiplyScalar(rise / Math.max(key.y, rise / reach));
+  const at = new THREE.Vector3(sphere.center.x + fall.x, 0, sphere.center.z + fall.y);
+  const sun = toCamera(square(at, box.min.y, reach));
+  const step = targets.passes.sun;
+  step.uniforms.sunDir.value.copy(key);
+  step.uniforms.sunCos.value = Math.cos(THREE.MathUtils.degToRad(constants.catcher.sunDiameter / 2));
+  drawShare(renderer, step, targets.sun, sun);
+  groundUniforms.worldToSun.value.copy(sun);
+  groundUniforms.sunLight.value = constants.catcher.sunIrradiance * Math.max(key.y, 0);
+  const middle = new THREE.Vector3(sphere.center.x + fall.x / 2, box.min.y, sphere.center.z + fall.y / 2);
+  ground.position.copy(middle);
+  ground.scale.setScalar(reach + fall.length() / 2);
+  ground.updateMatrixWorld();
 }
 
 function castShadow(renderer, scene, camera, group, keyView) {
@@ -355,6 +587,12 @@ export function updateLight(renderer, scene, camera, group, keyView) {
   if (now === signature) return false;
   signature = now;
   const target = renderer.getRenderTarget(), clear = renderer.getClearColor(new THREE.Color()), alpha = renderer.getClearAlpha();
+  const places = placesOf(group);
+  if (places !== skySignature) {
+    skySignature = places;
+    catchSky(renderer, scene, group);
+  }
+  catchSun(renderer, camera, keyView);
   castShadow(renderer, scene, camera, group, keyView);
   lighting(renderer, scene, camera, buffer);
   renderer.setRenderTarget(target);

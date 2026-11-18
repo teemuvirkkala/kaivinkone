@@ -18,6 +18,7 @@ import { LDrawConditionalLineMaterial } from 'three/addons/materials/LDrawCondit
 import { lockState } from '../lock.js';
 import { asGloss, isGlass, lightUp, setCamera, setLook, setRims } from './look.js';
 import { drawOutline, prepare, setOutline } from './outline.js';
+import { ground } from './light.js';
 import { gpuTimer, showTimes } from './ajat.js';
 
 const HOLD_MS = 700;         // a picture stays as the page draws it this long before its pieces move
@@ -67,6 +68,7 @@ let several = false;         // more than one finger since the first went down: 
 // turned from the one before turns there, about the model's middle, the camera still
 const hands = new THREE.Group();
 scene.add(hands);
+scene.add(ground);   // the model's shadow on it, the world's floor where the model's lowest point is (light.js)
 const stage = new THREE.Group();
 stage.rotation.x = Math.PI;
 stage.updateMatrix();
@@ -493,7 +495,7 @@ function unpick() {
 const veil = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.MeshBasicMaterial({ color: VEIL_COLOUR,
   transparent: true, opacity: VEIL, depthTest: false, depthWrite: false, toneMapped: false }));
 const veilCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-// once over the nearest face: its glass's two passes and back faces would lay it on again and again
+// once over the nearest face: its glass's passes and back faces would lay it on again and again
 const shade = new THREE.MeshBasicMaterial({ color: 0x1f2a33, transparent: true, opacity: GLASS_SHADE, depthFunc: THREE.LessDepth,
   toneMapped: false });
 
@@ -587,7 +589,8 @@ function idColour(n) {
 
 function shotLook(group, mode) {
   // swaps the pieces' materials for the shot's mode: the list of [object, material, visible] to put back
-  const swapped = [];
+  const swapped = [[ground, ground.material, ground.visible]];
+  if (mode !== 'all') ground.visible = false;   // the masks are the pieces', not their shadow's
   group.children.forEach((child, n) => {
     if (mode === 'all' || mode === 'outline') return;
     const isNew = mode === 'new' && child.userData.unit >= 0;
@@ -613,12 +616,12 @@ window.shot = async (i, mode = 'all') => {
   stage.clear();
   stage.add(group.parent);
   pose(group, 'drawn');
-  const swapped = shotLook(group, mode);
   resize();
   place(bookletView(data.steps[i]));
   controls.update();
   setCamera(camera);
   lightUp(renderer, scene, camera, group);
+  const swapped = shotLook(group, mode);
   renderer.render(scene, camera);
   if (mode === 'outline') renderer.clear();
   if (mode === 'all' || mode === 'outline') drawOutline(renderer, scene, camera, group, 1);
