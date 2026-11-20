@@ -420,9 +420,10 @@ function drawn(renderer, scene, camera, target, material) {
 }
 
 function stateOf(camera, group, buffer) {
-  // what the shadow and occlusion depend on: the camera, where the pieces are and the screen's size
+  // what the shadow and occlusion depend on: the camera, where the pieces are (and whether they're shown: brick by
+  // brick hides the ones still to come, ADR-0092) and the screen's size
   const places = [];
-  group.traverse(o => { if (o.parent === group) places.push(o.position.x, o.position.y, o.position.z); });
+  group.traverse(o => { if (o.parent === group) places.push(o.position.x, o.position.y, o.position.z, Number(o.visible)); });
   group.updateWorldMatrix(true, false);
   return [...camera.matrixWorld.elements, ...camera.projectionMatrix.elements, ...group.matrixWorld.elements, ...places,
     buffer.x, buffer.y].map(v => v.toFixed(3)).join();
@@ -431,16 +432,22 @@ function stateOf(camera, group, buffer) {
 function placesOf(group) {
   // what the sky's share of the ground depends on: where the pieces are
   const places = [];
-  group.traverse(o => { if (o.parent === group) places.push(o.position.x, o.position.y, o.position.z); });
+  group.traverse(o => { if (o.parent === group) places.push(o.position.x, o.position.y, o.position.z, Number(o.visible)); });
   group.updateWorldMatrix(true, true);
   return [...group.matrixWorld.elements, ...places].map(v => v.toFixed(3)).join();
+}
+
+function shownIn(o, group) {
+  // whether o is drawn: it and each of its parents up to group visible
+  for (let p = o; p && p !== group; p = p.parent) if (!p.visible) return false;
+  return true;
 }
 
 function solidBox(group) {
   // the box round the opaque faces (what stands on the ground and hides the light), world
   const box = new THREE.Box3(), part = new THREE.Box3();
   group.traverse(o => {
-    if (!o.isMesh || !o.layers.isEnabled(SOLID)) return;
+    if (!o.isMesh || !o.layers.isEnabled(SOLID) || !shownIn(o, group)) return;
     if (!o.geometry.boundingBox) o.geometry.computeBoundingBox();
     box.union(part.copy(o.geometry.boundingBox).applyMatrix4(o.matrixWorld));
   });

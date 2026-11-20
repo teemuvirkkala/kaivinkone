@@ -34,6 +34,7 @@ window.first = (sets => {   // window.sets: [{number, label}], tools/web3d.py wr
 <link rel="modulepreload" href="outline.js">
 <link rel="modulepreload" href="light.js">
 <link rel="modulepreload" href="ajat.js">
+<link rel="modulepreload" href="awake.js">
 <link rel="modulepreload" href="vendor/three/examples/jsm/lines/LineSegments2.js">
 <link rel="modulepreload" href="vendor/three/examples/jsm/lines/LineSegmentsGeometry.js">
 <link rel="modulepreload" href="vendor/three/examples/jsm/lines/LineMaterial.js">
@@ -50,12 +51,13 @@ window.first = (sets => {   // window.sets: [{number, label}], tools/web3d.py wr
   <span id="build" class="chip build" hidden></span>
   <span id="copies" class="chip copies" hidden></span>
   <span id="turn" class="chip turn" hidden></span>
+  <span id="brick" class="chip brick" hidden></span>
 </div>
 
 <div id="piece" role="dialog" aria-label="Palikka" hidden>
   <span id="swatch" aria-hidden="true"></span>
   <div class="about">
-    <div><span id="colour"></span> <span id="shape" lang="en"></span></div>
+    <div><span id="colour"></span> <span id="shape"></span></div>
     <div id="counts"></div>
   </div>
   <button id="unpick" class="close" aria-label="Sulje">
@@ -65,6 +67,13 @@ window.first = (sets => {   // window.sets: [{number, label}], tools/web3d.py wr
 
 <button id="home" class="round" aria-label="Palauta näkymä" hidden>
   <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/><circle cx="12" cy="12" r="2.5"/></svg>
+</button>
+
+<button id="bricks" class="round toggle" aria-label="Palikka kerrallaan" aria-pressed="false">
+  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11h18v9H3Z"/><path d="M5.5 11V8h5v3M13.5 11V8h5v3"/></svg>
+</button>
+<button id="replay" class="round" aria-label="Näytä vaihe uudelleen" hidden>
+  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.4-5.7"/><path d="M4 3v5h5"/></svg>
 </button>
 
 <div id="done" hidden>Valmis!</div>
@@ -78,7 +87,7 @@ window.first = (sets => {   // window.sets: [{number, label}], tools/web3d.py wr
     <div class="step"><span id="num">1</span></div>
     <div class="info">
       <div id="page">sivu 2–3</div>
-      <div id="caption" lang="en"></div>
+      <div id="caption"></div>
       <input id="steps" type="range" min="1" max="1" value="1" step="1" aria-label="Vaihe">
     </div>
   </div>

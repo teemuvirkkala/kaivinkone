@@ -10,7 +10,9 @@
 // opening view (tools/website.py, ADR-0071): it can't be turned by hand, tells the page round it when its first frame
 // is drawn, turns round when that page says 'turn' and stops drawing while it says 'pause' (scrolled out of sight).
 // A tap on a piece shows it whole through the others and names it, to find it in the pile; a reset button brings back
-// the booklet's view once the reader has turned the model; the slider goes to any step (ADR-0074).
+// the booklet's view once the reader has turned the model; the slider goes to any step (ADR-0074). The replay button
+// drops the picture's new pieces again; brick by brick (ADR-0092), the arrows step through a picture's new pieces one
+// unit at a time, the ones still to come not shown. The screen stays on while the page is open (awake.js).
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { LDrawLoader } from 'three/addons/loaders/LDrawLoader.js';
@@ -20,6 +22,7 @@ import { asGloss, isGlass, lightUp, setCamera, setLook, setRims } from './look.j
 import { drawOutline, prepare, setOutline } from './outline.js';
 import { ground } from './light.js';
 import { gpuTimer, showTimes } from './ajat.js';
+import { keepAwake } from './awake.js';
 
 const HOLD_MS = 700;         // a picture stays as the page draws it this long before its pieces move
 const CAMERA_MS = 800;       // a camera move, or a turn of the model in the hands
@@ -36,6 +39,10 @@ const GLASS_SHADE = 0.2;     // the opacity of the ink laid on a tapped glass pi
 const PICKED = 5;            // the layer of a tapped piece (outline.js has 1 to 3, light.js's SOLID 4)
 const SHOT = new URLSearchParams(location.search).has('shot');
 const SHOW = new URLSearchParams(location.search).has('esittely');
+// localStorage's key for the picture (from 1) the family was last on, the set's number after it: a link without a
+// step opens there (#252)
+const SAVED = 'kaivinkone-vaihe-';
+const BRICKS = 'kaivinkone-palikoittain';   // localStorage's key for brick by brick, '1' when on
 
 const $ = id => document.getElementById(id);
 // Each phase's end as a performance mark, '3d:' and its name, which tools/time3d.cjs reads (#219)
@@ -91,6 +98,8 @@ let turning = false;     // ?esittely: the page round it has said 'turn'
 let paused = false;      // ?esittely: and then 'pause', no frames drawn till the next 'turn'
 let stopped = false;     // the frames stopped, paused: the next 'turn' starts them again, once
 let picked = null;       // the tapped piece of the picture on the stage, drawn whole over the rest (drawPicked())
+let bricks = false;      // brick by brick (ADR-0092): a picture's new pieces come a unit at a time
+let brick = 0;           // brick by brick, the index (in unitsOf()) of the latest unit shown of the picture asked for
 
 function ease(t) {
   // smootherstep: still at both ends, its speed and acceleration rising and falling without a jolt, and never past
@@ -175,8 +184,26 @@ async function load(number, files = window.setFiles(number), open = Promise.reso
   $('steps').max = data.steps.length;
   $('loading').classList.add('gone');
   if (SHOT) return;
-  const wanted = parseInt(location.hash.split('/')[1], 10) - 1;
-  show(Number.isFinite(wanted) ? Math.max(0, Math.min(wanted, data.steps.length - 1)) : 0, false);
+  const asked = parseInt(location.hash.split('/')[1], 10);
+  const wanted = (Number.isFinite(asked) ? asked : saved(data.number) || 1) - 1;
+  show(Math.max(0, Math.min(wanted, data.steps.length - 1)), false);
+}
+
+function saved(number) {
+  // the picture (from 1) set number's page was last on, or NaN where storage is blocked or holds none
+  try {
+    return parseInt(localStorage.getItem(SAVED + number), 10);
+  } catch {
+    return NaN;
+  }
+}
+
+function save(number, n) {
+  try {
+    localStorage.setItem(SAVED + number, String(n));
+  } catch {
+    // storage blocked (a private window, a browser's setting): the page opens on step 1 next time
+  }
 }
 
 function middle(pieces) {
@@ -243,10 +270,14 @@ function cameraMatrix(v) {
 }
 
 function usable() {
-  // the part of the screen between the header and chips and the footer, in CSS px: the picture is fitted in it
+  // the part of the screen between the header, chips or headline and the footer, in CSS px: the picture is fitted in it
   const w = window.innerWidth, h = window.innerHeight;
   if (SHOT) return { w, h, top: 0, bottom: h };
-  const top = Math.max($('chips').getBoundingClientRect().bottom, document.querySelector('header').getBoundingClientRect().bottom);
+  // the finished model's headline counts by its layout box (offset*), not its rect, which its pop-in scales down
+  const done = $('done');
+  const headline = done.offsetHeight ? done.offsetTop + done.offsetHeight : 0;
+  const top = Math.max($('chips').getBoundingClientRect().bottom, document.querySelector('header').getBoundingClientRect().bottom,
+    headline);
   const bottom = document.querySelector('footer').getBoundingClientRect().top;
   return bottom - top > h * 0.3 ? { w, h, top, bottom } : { w, h, top: 0, bottom: h };
 }
@@ -282,6 +313,7 @@ async function show(i, animate = true) {
   const forward = i === at + 1;
   at = i;
   const pic = data.steps[i];
+  brick = forward && animate ? 0 : lastBrick(pic);
   label(i, pic);
   const group = await picture(i);
   if (at !== i) return;
@@ -367,13 +399,62 @@ function put(i, group, drop) {
   shown = group;
   onStage = i;
   drawn = i;
-  moves = [];
-  pose(group, drop ? 'start' : 'built');
-  if (drop) move(group);
-  outlineFades = Math.max(performance.now() + HOLD_MS, ...moves.map(m => m.t0 + data.motion.ms));
+  arrange(group, drop);
   ahead(i + 1, outlineFades + FADE_MS - performance.now());
   controls.autoRotate = data.steps[i].kind === 'finale' || (SHOW && turning);
   controls.autoRotateSpeed = FINALE_SPIN;
+}
+
+function unitsOf(pic) {
+  // the units of a picture's new pieces, in the order they go on
+  return [...new Set(pic.parts.map(p => p[3]).filter(u => u >= 0))].sort((a, b) => a - b);
+}
+
+function lastBrick(pic) {
+  return Math.max(0, unitsOf(pic).length - 1);
+}
+
+function arrange(group, drop) {
+  // the picture's pieces in place, its new ones dropping (drop); brick by brick, only the units up to the latest
+  // (brick) shown, and only the latest dropping
+  moves = [];
+  const order = unitsOf(data.steps[onStage]);
+  const latest = bricks ? order[brick] : undefined;
+  for (const child of group.children) {
+    const { unit } = child.userData;
+    child.visible = !bricks || unit < 0 || order.indexOf(unit) <= brick;
+  }
+  pose(group, 'built');
+  if (drop) {
+    for (const child of group.children) {
+      if (latest === undefined || child.userData.unit === latest) child.position.copy(child.userData.start ?? child.userData.rest);
+    }
+    move(group, latest);
+  }
+  outlineFades = Math.max(performance.now() + HOLD_MS, ...moves.map(m => m.t0 + data.motion.ms));
+}
+
+function replay() {
+  // the picture's new pieces (brick by brick, its latest unit) dropped again from where they start
+  if (!data || onStage < 0 || onStage !== at) return;
+  if (change) settle(change, true);
+  unpick();
+  arrange(shown, true);
+}
+
+function setBricks(on) {
+  // brick by brick on or off: the picture on the stage stays as it is, every unit of it shown
+  bricks = on;
+  try {
+    localStorage.setItem(BRICKS, on ? '1' : '');
+  } catch {
+    // storage blocked: the mode lasts while the page is open
+  }
+  $('bricks').setAttribute('aria-pressed', String(on));
+  if (!data || at < 0) return;
+  brick = lastBrick(data.steps[at]);
+  label(at, data.steps[at]);
+  if (shown && onStage === at && !change) arrange(shown, false);
 }
 
 function ahead(i, after) {
@@ -386,20 +467,23 @@ function ahead(i, after) {
   }, { timeout: IDLE_MS }), Math.max(0, after));
 }
 
-function move(group) {
+function move(group, only) {
   // each unit a moment after the one before, or once the units it waits for (NUMBER.json's waits: stacked on them,
   // it would meet them on the way) have landed: the times NUMBER.json's motion gives, which tools/insertion.py's
-  // replayed() steps through to check the frames
+  // replayed() steps through to check the frames; only: that unit alone, brick by brick
   const starts = new Map();
   const units = [...new Set(group.children.map(c => c.userData.unit).filter(u => u >= 0))].sort((a, b) => a - b);
   const t0 = performance.now() + HOLD_MS;
-  for (const unit of units) {
-    const after = (group.userData.waits[unit] ?? []).map(v => starts.get(v) + data.motion.ms);
-    starts.set(unit, Math.max(t0 + data.motion.stagger * unit, ...after));
+  if (only !== undefined) starts.set(only, t0);
+  else {
+    for (const unit of units) {
+      const after = (group.userData.waits[unit] ?? []).map(v => starts.get(v) + data.motion.ms);
+      starts.set(unit, Math.max(t0 + data.motion.stagger * unit, ...after));
+    }
   }
   for (const child of group.children) {
     const { unit, rest } = child.userData;
-    if (unit >= 0) moves.push({ child, from: child.position.clone(), to: rest, t0: starts.get(unit) });
+    if (starts.has(unit)) moves.push({ child, from: child.position.clone(), to: rest, t0: starts.get(unit) });
   }
 }
 
@@ -417,14 +501,27 @@ function label(i, pic) {
   $('copies').textContent = `×${pic.copies}`;
   $('turn').hidden = !pic.turn;
   $('turn').textContent = pic.turn ? `↻ ${pic.turn}` : '';
+  const units = unitsOf(pic).length;
+  $('brick').hidden = !(bricks && units > 1);
+  $('brick').textContent = `Palikka ${Math.min(brick, units - 1) + 1}/${units}`;
+  $('replay').hidden = units === 0;
   $('done').hidden = !finale;
-  $('prev').disabled = i === 0;
+  $('prev').disabled = i === 0 && !(bricks && brick > 0);
   $('next').disabled = finale;
   history.replaceState(null, '', `#${data.number}/${i + 1}`);
+  if (!SHOT && !SHOW) save(data.number, i + 1);
 }
 
 function step(by) {
   if (!data) return;
+  if (bricks && shown && onStage === at && !change && brick + by >= 0 && brick + by <= lastBrick(data.steps[at])) {
+    // brick by brick: the next unit drops on, or the latest goes off
+    brick += by;
+    unpick();
+    label(at, data.steps[at]);
+    arrange(shown, by > 0);
+    return;
+  }
   go(at + by);
 }
 
@@ -453,9 +550,13 @@ function pick(x, y) {
   ray.setFromCamera(new THREE.Vector2(x / window.innerWidth * 2 - 1, 1 - y / window.innerHeight * 2), camera);
   const faces = [];
   shown.traverse(o => { if (o.isMesh && !o.isLineSegments2 && !o.userData.glassPass && o.layers.test(ray.layers)) faces.push(o); });
-  const hit = ray.intersectObjects(faces, false)[0];
-  let piece = hit?.object;
-  while (piece && piece.parent !== shown) piece = piece.parent;
+  const top = o => {
+    let piece = o;
+    while (piece && piece.parent !== shown) piece = piece.parent;
+    return piece;
+  };
+  // the raycaster sees hidden pieces too: brick by brick, the units still to come
+  const piece = ray.intersectObjects(faces, false).map(h => top(h.object)).find(p => p?.visible);
   if (!piece || piece === picked) unpick();
   else choose(piece);
 }
@@ -550,13 +651,15 @@ function tracked(now) {
   // this frame for tools/moves3d.cjs: the middle (CSS px) of the picture's pieces in place, and of its older ones
   const onScreen = p => projected(p.clone().applyMatrix4(shown.matrixWorld));
   // and for tools/drops3d.cjs, each new piece's offset (LDU, its sub-model's frame) from its place and its
-  // middle on the screen as it moves, and how many pieces are still moving
+  // middle on the screen as it moves, how many pieces are still moving, and for tools/controls3d.cjs how many are
+  // hidden (brick by brick, the units still to come)
   const pieces = shown.children.filter(c => c.userData.unit >= 0).map(c => {
     const off = c.position.clone().sub(c.userData.rest);
     return [c.userData.index, off.x, off.y, off.z, ...onScreen(c.position.clone().add(c.userData.centre))];
   });
   return { t: now, picture: onStage, middle: onScreen(shown.userData.middle), older: onScreen(shown.userData.older),
-    opacity: Number(canvas.style.opacity || 1), change: change?.kind ?? null, pieces, moving: moves.length };
+    opacity: Number(canvas.style.opacity || 1), change: change?.kind ?? null, pieces, moving: moves.length,
+    hidden: shown.children.filter(c => !c.visible).length };
 }
 
 function projected(world) {
@@ -668,6 +771,8 @@ window.addEventListener('message', e => {
 $('prev').addEventListener('click', () => step(-1));
 $('next').addEventListener('click', () => step(1));
 $('home').addEventListener('click', home);
+$('replay').addEventListener('click', replay);
+$('bricks').addEventListener('click', () => setBricks(!bricks));
 $('unpick').addEventListener('click', unpick);
 // the slider shows the step it is on while it is dragged, and goes there when let go
 $('steps').addEventListener('input', e => {
@@ -696,11 +801,13 @@ window.addEventListener('keydown', e => {
   if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); step(1); }
   if (e.key === 'ArrowLeft') step(-1);
   if (e.key === 'Home') home();
+  if (e.key === 'r' || e.key === 'R') replay();
+  if (e.key === 'b' || e.key === 'B') setBricks(!bricks);
   if (e.key === 'Escape') unpick();
 });
 window.addEventListener('resize', resize);
 $('set').addEventListener('change', e => {
-  history.replaceState(null, '', `#${e.target.value}/1`);
+  history.replaceState(null, '', `#${e.target.value}`);
   at = -1;
   load(e.target.value).catch(fail);
 });
@@ -738,9 +845,16 @@ async function start() {
   await load(number, files, open);
 }
 
+try {
+  bricks = !SHOT && !SHOW && localStorage.getItem(BRICKS) === '1';
+} catch {
+  // storage blocked: off
+}
+$('bricks').setAttribute('aria-pressed', String(bricks));
 resize();
 // ?ajat: the timings on the screen, the GPU's too where the browser times it
 const timer = !SHOT && new URLSearchParams(location.search).has('ajat') ? gpuTimer(renderer.getContext()) : null;
 if (!SHOT && new URLSearchParams(location.search).has('ajat')) showTimes();
 if (!SHOT) requestAnimationFrame(tick);
+if (!SHOW && !SHOT) keepAwake();
 start().catch(fail);
