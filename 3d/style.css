@@ -3,6 +3,13 @@
   --accent: #fac80a; --accent-ink: #3a2c00; --link: #0b4f8a; --turn: #ca4c0b;
   /* the screen's side margins, clear of the notch and rounded corners on a phone on its side (#259) */
   --left: max(16px, env(safe-area-inset-left)); --right: max(16px, env(safe-area-inset-right));
+  /* the controls' sizes and spacing, nowhere else (ADR-0093): every round button one size, every small control
+     (the step box, the card's ×, the header's pills) the least a finger taps (44 px, WCAG 2.5.5), one gap between
+     any two; a smaller screen keeps them, as a 4-year-old's thumb doesn't shrink with it */
+  --tap: 60px; --small: 44px; --gap: 12px;
+  /* the one column the controls stand in, header to footer: wider on a screen on its side, which has room across */
+  --column: 640px; --inner: calc(var(--column) - 32px);
+  --top: max(12px, env(safe-area-inset-top)); --below-header: calc(var(--top) + var(--small) + var(--gap));
   color-scheme: light;
 }
 * { box-sizing: border-box; }
@@ -11,15 +18,15 @@ body { background: radial-gradient(ellipse at 50% 35%, #eef7fd 0%, var(--sky) 70
   font: 16px/1.35 system-ui, -apple-system, "Segoe UI", sans-serif; -webkit-tap-highlight-color: transparent; }
 #view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
 
-header { position: fixed; top: 0; left: 0; right: 0; display: flex; justify-content: space-between; gap: 12px;
-  padding: max(12px, env(safe-area-inset-top)) var(--right) 0 var(--left); pointer-events: none; }
+header { position: fixed; top: 0; left: 0; right: 0; max-width: var(--column); margin: 0 auto; display: flex; justify-content: space-between; gap: 12px;
+  padding: var(--top) var(--right) 0 var(--left); pointer-events: none; }
 header > * { pointer-events: auto; }
-.back { color: var(--link); text-decoration: none; font-weight: 600; background: var(--panel); padding: 8px 14px;
-  border-radius: 999px; white-space: nowrap; min-height: 44px; display: inline-flex; align-items: center; }
-#set { font: inherit; color: var(--ink); background: var(--panel); border: 0; border-radius: 999px; padding: 8px 14px;
-  max-width: 62vw; }
+.back { color: var(--link); text-decoration: none; font-weight: 600; background: var(--panel); padding: 0 14px;
+  border-radius: 999px; white-space: nowrap; height: var(--small); display: inline-flex; align-items: center; }
+#set { font: inherit; color: var(--ink); background: var(--panel); border: 0; border-radius: 999px; padding: 0 14px;
+  height: var(--small); max-width: 62vw; }
 
-#chips { position: fixed; top: calc(max(12px, env(safe-area-inset-top)) + 52px); left: var(--left); right: var(--right);
+#chips { position: fixed; top: var(--below-header); left: var(--left); right: var(--right); max-width: var(--inner); margin: 0 auto;
   display: flex; flex-wrap: wrap; gap: 8px; pointer-events: none; }
 .chip { background: var(--panel); border-radius: 999px; padding: 6px 14px; font-weight: 700; font-size: 18px; }
 .chip.copies { background: var(--accent); color: var(--accent-ink); font-size: 22px; }
@@ -29,7 +36,7 @@ header > * { pointer-events: auto; }
 
 /* the finished model's headline: in the chips' place (the finale has none), above the model, which usable() fits
    below it (#257); as tall as a phone on its side can spare */
-#done { position: fixed; top: calc(max(12px, env(safe-area-inset-top)) + 52px); left: 0; right: 0; text-align: center;
+#done { position: fixed; top: var(--below-header); left: 0; right: 0; text-align: center;
   font-size: clamp(40px, min(12vw, 12vh), 88px); line-height: 1.1;
   font-weight: 900; color: var(--accent); -webkit-text-stroke: 3px var(--ink); paint-order: stroke fill;
   pointer-events: none; animation: pop .6s cubic-bezier(.2, 1.6, .4, 1); }
@@ -40,20 +47,37 @@ header > * { pointer-events: auto; }
   pointer-events: none; }
 #loading.gone { display: none; }
 
-footer { position: fixed; left: 0; right: 0; bottom: 0; display: flex; align-items: center; gap: 12px;
-  padding: 0 var(--right) max(16px, env(safe-area-inset-bottom)) var(--left); max-width: 640px; margin: 0 auto; }
-.nav { flex: none; width: 72px; height: 72px; border-radius: 50%; border: 0; padding: 0; cursor: pointer;
-  display: grid; place-items: center; background: var(--panel); color: var(--ink); box-shadow: 0 2px 8px rgba(0, 0, 0, .15); }
+/* every control at the bottom in one grid (ADR-0093): upright, the tools (brick by brick, replay, reset) in a row
+   over ◀ and the panel, nothing over ▶, which is the child's; on its side, where height is short, all in one row.
+   The grid lets drags through its empty cells. */
+footer { position: fixed; left: 0; right: 0; bottom: 0; margin: 0 auto; max-width: var(--column);
+  padding: 0 var(--right) max(16px, env(safe-area-inset-bottom)) var(--left); pointer-events: none;
+  display: grid; gap: var(--gap); align-items: center;
+  grid-template-columns: repeat(3, var(--tap)) 1fr var(--tap);
+  grid-template-areas: "bricks replay home . ." "prev where where where next"; }
+footer > * { pointer-events: auto; }
+#prev { grid-area: prev; } #next { grid-area: next; } .where { grid-area: where; }
+#bricks { grid-area: bricks; } #replay { grid-area: replay; } #home { grid-area: home; }
+@media (orientation: landscape) {
+  :root { --column: 920px; }
+  footer { grid-template-columns: repeat(4, var(--tap)) 1fr var(--tap);
+    grid-template-areas: "bricks replay home prev where next"; }
+}
+.nav, .round:not(.close) { width: var(--tap); height: var(--tap); box-shadow: 0 2px 8px rgba(0, 0, 0, .15); }
+.nav { border-radius: 50%; border: 0; padding: 0; cursor: pointer;
+  display: grid; place-items: center; background: var(--panel); color: var(--ink); }
 /* an arrow's triangle has its centroid at its box's middle (index.html), so it sits in the middle of the button */
 .nav svg { width: 50%; height: 50%; display: block; }
 .nav .arrow { fill: currentColor; stroke: currentColor; stroke-width: 2; stroke-linejoin: round; }
 .nav.primary { background: var(--accent); color: var(--accent-ink); }
-.nav:disabled { opacity: .35; cursor: default; }
-.nav:not(:disabled):active { transform: scale(.94); }
-.where { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; background: var(--panel);
-  border-radius: 20px; padding: 8px 14px; }
-.step { flex: none; width: 52px; height: 52px; border-radius: 12px; background: #fff; display: grid; place-items: center;
-  font-size: 28px; font-weight: 800; box-shadow: inset 0 0 0 2px #c9dcea; }
+/* a button that can't act is greyed, not hidden, so no cell empties and nothing moves (ADR-0093) */
+.nav:disabled, .round:disabled { opacity: .35; cursor: default; }
+.nav:not(:disabled):active, .round:not(:disabled):active { transform: scale(.94); }
+.where { min-width: 0; display: flex; align-items: center; gap: 8px; background: var(--panel);
+  border-radius: 20px; padding: 8px 12px 8px calc((var(--tap) - var(--small)) / 2); }
+/* the step box's left padding centres it under the replay button above it (upright) */
+.step { flex: none; width: var(--small); height: var(--small); border-radius: 12px; background: #fff; display: grid; place-items: center;
+  font-size: 24px; font-weight: 800; box-shadow: inset 0 0 0 2px #c9dcea; }
 .info { min-width: 0; flex: 1; }
 #page { font-weight: 700; }
 #caption { color: var(--muted); font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -74,38 +98,26 @@ footer { position: fixed; left: 0; right: 0; bottom: 0; display: flex; align-ite
   background: var(--panel); border-radius: 50%; }
 .round svg, .close svg { width: 55%; height: 55%; fill: none; stroke: currentColor; stroke-width: 2.4;
   stroke-linecap: round; stroke-linejoin: round; }
-#home { position: fixed; right: var(--right); width: 56px; height: 56px; box-shadow: 0 2px 8px rgba(0, 0, 0, .15);
-  bottom: calc(max(16px, env(safe-area-inset-bottom)) + 84px); }
-#home[hidden] { display: none; }
-/* the replay of the step and brick by brick (ADR-0092): the reset's size, on the left above the footer, one above the other */
-#replay, #bricks { position: fixed; left: var(--left); width: 56px; height: 56px; box-shadow: 0 2px 8px rgba(0, 0, 0, .15);
-  --above: 88px; bottom: calc(max(16px, env(safe-area-inset-bottom)) + var(--above)); }
-#bricks { --above: 156px; }
-#replay[hidden] { display: none; }
 .toggle[aria-pressed="true"] { background: var(--link); color: #fff; }
 #home circle { fill: currentColor; stroke: none; }
 
 /* a tapped piece: its colour and name, to find it in the pile */
-#piece { position: fixed; left: var(--left); right: var(--right); max-width: 608px; margin: 0 auto; display: flex; align-items: center;
-  gap: 12px; padding: 8px 8px 8px 12px; background: rgba(255, 255, 255, .95); border-radius: 20px;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, .18); top: calc(max(12px, env(safe-area-inset-top)) + 52px); }
+#piece { position: fixed; left: var(--left); right: var(--right); max-width: var(--inner); margin: 0 auto; display: flex; align-items: center;
+  gap: var(--gap); padding: var(--gap); background: rgba(255, 255, 255, .95); border-radius: 20px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .18); top: var(--below-header); }
 #piece[hidden] { display: none; }
 body.picking #chips { visibility: hidden; }   /* the card stands where they are; still there, the model keeps its place */
-#swatch { flex: none; width: 44px; height: 44px; border-radius: 12px; box-shadow: inset 0 0 0 2px rgba(0, 0, 0, .15); }
+#swatch { flex: none; width: var(--small); height: var(--small); border-radius: 12px; box-shadow: inset 0 0 0 2px rgba(0, 0, 0, .15); }
 #swatch.glass { background-image: repeating-linear-gradient(135deg, transparent 0 6px, rgba(31, 42, 51, .3) 6px 9px); }
 .about { flex: 1; min-width: 0; }
 #colour { font-weight: 800; font-size: 18px; }
 #shape { color: var(--muted); }
 #counts { font-size: 14px; color: var(--muted); }
-.close { flex: none; width: 44px; height: 44px; background: #eef4f9; }
+.close { flex: none; width: var(--small); height: var(--small); background: #eef4f9; }
 
 @media (max-width: 420px) {
-  .nav { width: 60px; height: 60px; }
-  #home { bottom: calc(max(16px, env(safe-area-inset-bottom)) + 72px); }
-  .step { width: 44px; height: 44px; font-size: 24px; }
-  .back, #set { font-size: 15px; padding: 8px 10px; }
+  .back, #set { font-size: 15px; padding: 0 10px; }
   #set { max-width: calc(100vw - 32px - 100px); }
-  footer { gap: 8px; }
 }
 
 /* ?shot: a bare picture for tools/compare3d.py; ?esittely: the finished model alone, for the index page */

@@ -9,8 +9,8 @@
 // screen (tools/moves3d.cjs). ?esittely shows only the cover's model (NUMBER.json's cover), for the index page's
 // opening view (tools/website.py, ADR-0071): it can't be turned by hand, tells the page round it when its first frame
 // is drawn, turns round when that page says 'turn' and stops drawing while it says 'pause' (scrolled out of sight).
-// A tap on a piece shows it whole through the others and names it, to find it in the pile; a reset button brings back
-// the booklet's view once the reader has turned the model; the slider goes to any step (ADR-0074). The replay button
+// A tap on a piece shows it whole through the others and names it, to find it in the pile; a reset button, greyed till
+// the reader has turned the model, brings back the booklet's view (it stays in its place: ADR-0093); the slider goes to any step (ADR-0074). The replay button
 // drops the picture's new pieces again; brick by brick (ADR-0092), the arrows step through a picture's new pieces one
 // unit at a time, the ones still to come not shown. The screen stays on while the page is open (awake.js).
 import * as THREE from 'three';
@@ -386,7 +386,7 @@ function settle(c, done) {
   hands.position.set(0, 0, 0);
   hands.quaternion.identity();
   place(c.to);
-  $('home').hidden = true;
+  $('home').disabled = true;
   if (c.home) controls.autoRotate = data.steps[c.i].kind === 'finale';
   if (done) { change = null; canvas.style.opacity = ''; }
   if (onStage !== c.i || shown !== c.group) put(c.i, c.group, c.drop);
@@ -504,7 +504,7 @@ function label(i, pic) {
   const units = unitsOf(pic).length;
   $('brick').hidden = !(bricks && units > 1);
   $('brick').textContent = `Palikka ${Math.min(brick, units - 1) + 1}/${units}`;
-  $('replay').hidden = units === 0;
+  $('replay').disabled = units === 0;
   $('done').hidden = !finale;
   $('prev').disabled = i === 0 && !(bricks && brick > 0);
   $('next').disabled = finale;
@@ -786,7 +786,7 @@ canvas.addEventListener('pointerdown', e => {
 });
 canvas.addEventListener('pointermove', e => {
   const down = fingers.get(e.pointerId);
-  if (down && (several || Math.hypot(e.clientX - down.x, e.clientY - down.y) > TAP_PX)) $('home').hidden = SHOW || SHOT;
+  if (down && (several || Math.hypot(e.clientX - down.x, e.clientY - down.y) > TAP_PX)) $('home').disabled = SHOW || SHOT;
 });
 canvas.addEventListener('pointerup', e => {
   const down = fingers.get(e.pointerId);
@@ -795,7 +795,7 @@ canvas.addEventListener('pointerup', e => {
   if (Math.hypot(e.clientX - down.x, e.clientY - down.y) <= TAP_PX && performance.now() - down.t <= TAP_MS) pick(e.clientX, e.clientY);
 });
 canvas.addEventListener('pointercancel', e => fingers.delete(e.pointerId));
-canvas.addEventListener('wheel', () => { $('home').hidden = SHOW || SHOT; }, { passive: true });
+canvas.addEventListener('wheel', () => { $('home').disabled = SHOW || SHOT; }, { passive: true });
 window.addEventListener('keydown', e => {
   if (e.target === $('steps') || e.target === $('set')) return;   // their own keys move them
   if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); step(1); }

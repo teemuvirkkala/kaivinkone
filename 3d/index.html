@@ -65,17 +65,6 @@ window.first = (sets => {   // window.sets: [{number, label}], tools/web3d.py wr
   </button>
 </div>
 
-<button id="home" class="round" aria-label="Palauta näkymä" hidden>
-  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/><circle cx="12" cy="12" r="2.5"/></svg>
-</button>
-
-<button id="bricks" class="round toggle" aria-label="Palikka kerrallaan" aria-pressed="false">
-  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11h18v9H3Z"/><path d="M5.5 11V8h5v3M13.5 11V8h5v3"/></svg>
-</button>
-<button id="replay" class="round" aria-label="Näytä vaihe uudelleen" hidden>
-  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.4-5.7"/><path d="M4 3v5h5"/></svg>
-</button>
-
 <div id="done" hidden>Valmis!</div>
 <div id="loading">Ladataan palikoita…</div>
 
@@ -93,6 +82,15 @@ window.first = (sets => {   // window.sets: [{number, label}], tools/web3d.py wr
   </div>
   <button id="next" class="nav primary" aria-label="Seuraava vaihe">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path class="arrow" d="M7 3 7 21 22 12Z"/></svg>
+  </button>
+  <button id="home" class="round" aria-label="Palauta näkymä" disabled>
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/><circle cx="12" cy="12" r="2.5"/></svg>
+  </button>
+  <button id="bricks" class="round toggle" aria-label="Palikka kerrallaan" aria-pressed="false">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11h18v9H3Z"/><path d="M5.5 11V8h5v3M13.5 11V8h5v3"/></svg>
+  </button>
+  <button id="replay" class="round" aria-label="Näytä vaihe uudelleen" disabled>
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.4-5.7"/><path d="M4 3v5h5"/></svg>
   </button>
 </footer>
 
