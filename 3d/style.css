@@ -1,6 +1,8 @@
 :root {
   --sky: #d6ebfa; --ink: #1f2a33; --muted: #4d5d6b; --panel: rgba(255, 255, 255, .86);
   --accent: #fac80a; --accent-ink: #3a2c00; --link: #0b4f8a; --turn: #ca4c0b;
+  /* the screen's side margins, clear of the notch and rounded corners on a phone on its side (#259) */
+  --left: max(16px, env(safe-area-inset-left)); --right: max(16px, env(safe-area-inset-right));
   color-scheme: light;
 }
 * { box-sizing: border-box; }
@@ -10,21 +12,25 @@ body { background: radial-gradient(ellipse at 50% 35%, #eef7fd 0%, var(--sky) 70
 #view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
 
 header { position: fixed; top: 0; left: 0; right: 0; display: flex; justify-content: space-between; gap: 12px;
-  padding: max(12px, env(safe-area-inset-top)) 16px 0; pointer-events: none; }
+  padding: max(12px, env(safe-area-inset-top)) var(--right) 0 var(--left); pointer-events: none; }
 header > * { pointer-events: auto; }
 .back { color: var(--link); text-decoration: none; font-weight: 600; background: var(--panel); padding: 8px 14px;
-  border-radius: 999px; white-space: nowrap; }
+  border-radius: 999px; white-space: nowrap; min-height: 44px; display: inline-flex; align-items: center; }
 #set { font: inherit; color: var(--ink); background: var(--panel); border: 0; border-radius: 999px; padding: 8px 14px;
   max-width: 62vw; }
 
-#chips { position: fixed; top: calc(max(12px, env(safe-area-inset-top)) + 52px); left: 16px; right: 16px;
+#chips { position: fixed; top: calc(max(12px, env(safe-area-inset-top)) + 52px); left: var(--left); right: var(--right);
   display: flex; flex-wrap: wrap; gap: 8px; pointer-events: none; }
 .chip { background: var(--panel); border-radius: 999px; padding: 6px 14px; font-weight: 700; font-size: 18px; }
 .chip.copies { background: var(--accent); color: var(--accent-ink); font-size: 22px; }
 .chip.turn { background: var(--turn); color: #fff; }
+.chip.brick { background: var(--link); color: #fff; }
 .chip[hidden] { display: none; }
 
-#done { position: fixed; top: 22%; left: 0; right: 0; text-align: center; font-size: clamp(40px, 12vw, 88px);
+/* the finished model's headline: in the chips' place (the finale has none), above the model, which usable() fits
+   below it (#257); as tall as a phone on its side can spare */
+#done { position: fixed; top: calc(max(12px, env(safe-area-inset-top)) + 52px); left: 0; right: 0; text-align: center;
+  font-size: clamp(40px, min(12vw, 12vh), 88px); line-height: 1.1;
   font-weight: 900; color: var(--accent); -webkit-text-stroke: 3px var(--ink); paint-order: stroke fill;
   pointer-events: none; animation: pop .6s cubic-bezier(.2, 1.6, .4, 1); }
 #done[hidden] { display: none; }
@@ -35,7 +41,7 @@ header > * { pointer-events: auto; }
 #loading.gone { display: none; }
 
 footer { position: fixed; left: 0; right: 0; bottom: 0; display: flex; align-items: center; gap: 12px;
-  padding: 0 16px max(16px, env(safe-area-inset-bottom)); max-width: 640px; margin: 0 auto; }
+  padding: 0 var(--right) max(16px, env(safe-area-inset-bottom)) var(--left); max-width: 640px; margin: 0 auto; }
 .nav { flex: none; width: 72px; height: 72px; border-radius: 50%; border: 0; padding: 0; cursor: pointer;
   display: grid; place-items: center; background: var(--panel); color: var(--ink); box-shadow: 0 2px 8px rgba(0, 0, 0, .15); }
 /* an arrow's triangle has its centroid at its box's middle (index.html), so it sits in the middle of the button */
@@ -51,8 +57,9 @@ footer { position: fixed; left: 0; right: 0; bottom: 0; display: flex; align-ite
 .info { min-width: 0; flex: 1; }
 #page { font-weight: 700; }
 #caption { color: var(--muted); font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-/* the steps: a slider whose track is the old progress bar, its whole height (a finger's) taking a touch */
-#steps { -webkit-appearance: none; appearance: none; display: block; width: 100%; height: 32px; margin: 2px 0 -6px;
+/* the steps: a slider whose track is the old progress bar, its whole height (a finger's, 44 px: #256) taking a
+   touch; the margins keep the bar where the 32 px slider had it, so the footer doesn't grow */
+#steps { -webkit-appearance: none; appearance: none; display: block; width: 100%; height: 44px; margin: -4px 0 -12px;
   background: transparent; cursor: pointer; touch-action: none; --done: 0%; }
 #steps::-webkit-slider-runnable-track { height: 8px; border-radius: 4px;
   background: linear-gradient(to right, var(--link) var(--done), #c9dcea var(--done)); }
@@ -67,13 +74,19 @@ footer { position: fixed; left: 0; right: 0; bottom: 0; display: flex; align-ite
   background: var(--panel); border-radius: 50%; }
 .round svg, .close svg { width: 55%; height: 55%; fill: none; stroke: currentColor; stroke-width: 2.4;
   stroke-linecap: round; stroke-linejoin: round; }
-#home { position: fixed; right: 16px; width: 56px; height: 56px; box-shadow: 0 2px 8px rgba(0, 0, 0, .15);
+#home { position: fixed; right: var(--right); width: 56px; height: 56px; box-shadow: 0 2px 8px rgba(0, 0, 0, .15);
   bottom: calc(max(16px, env(safe-area-inset-bottom)) + 84px); }
 #home[hidden] { display: none; }
+/* the replay of the step and brick by brick (ADR-0092): the reset's size, on the left above the footer, one above the other */
+#replay, #bricks { position: fixed; left: var(--left); width: 56px; height: 56px; box-shadow: 0 2px 8px rgba(0, 0, 0, .15);
+  --above: 88px; bottom: calc(max(16px, env(safe-area-inset-bottom)) + var(--above)); }
+#bricks { --above: 156px; }
+#replay[hidden] { display: none; }
+.toggle[aria-pressed="true"] { background: var(--link); color: #fff; }
 #home circle { fill: currentColor; stroke: none; }
 
 /* a tapped piece: its colour and name, to find it in the pile */
-#piece { position: fixed; left: 16px; right: 16px; max-width: 608px; margin: 0 auto; display: flex; align-items: center;
+#piece { position: fixed; left: var(--left); right: var(--right); max-width: 608px; margin: 0 auto; display: flex; align-items: center;
   gap: 12px; padding: 8px 8px 8px 12px; background: rgba(255, 255, 255, .95); border-radius: 20px;
   box-shadow: 0 2px 10px rgba(0, 0, 0, .18); top: calc(max(12px, env(safe-area-inset-top)) + 52px); }
 #piece[hidden] { display: none; }
@@ -98,10 +111,12 @@ body.picking #chips { visibility: hidden; }   /* the card stands where they are;
 /* ?shot: a bare picture for tools/compare3d.py; ?esittely: the finished model alone, for the index page */
 body.shot, body.esittely { background: none; }
 body.shot header, body.shot #chips, body.shot footer, body.shot #loading, body.shot #done, body.shot #piece, body.shot #home,
+body.shot #replay, body.shot #bricks, body.esittely #replay, body.esittely #bricks,
 body.esittely header, body.esittely #chips, body.esittely footer, body.esittely #loading, body.esittely #done,
 body.esittely #piece, body.esittely #home { display: none; }
 
 /* ?ajat: the page's timings (ajat.js) */
-#ajat { position: fixed; top: calc(max(12px, env(safe-area-inset-top)) + 96px); left: 8px; right: 8px; margin: 0;
+#ajat { position: fixed; top: calc(max(12px, env(safe-area-inset-top)) + 96px); left: max(8px, env(safe-area-inset-left));
+  right: max(8px, env(safe-area-inset-right)); margin: 0;
   padding: 8px 10px; background: rgba(255, 255, 255, .92); border-radius: 8px; font: 12px/1.4 ui-monospace, monospace;
   white-space: pre-wrap; max-height: 40vh; overflow: auto; pointer-events: none; }
