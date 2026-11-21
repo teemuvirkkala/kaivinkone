@@ -30,6 +30,7 @@ const CUT_MS = 200;          // a fade to another sub-model: out, then in
 const CUT_SWAP = 0.5;        // the share of a cut at which the screen is blank and the next picture goes on
 const FADE_MS = 600;         // the new pieces' outline fades out this long once they are in place
 const IDLE_MS = 1000;        // the next picture is built when the page is idle, or after this long at most
+const BREATH_MS = 50;        // building gives the thread back this often: a tap waits no longer (breathe())
 const FINALE_SPIN = 1.2;     // OrbitControls autoRotateSpeed on the finished model
 const TAP_PX = 10;           // CSS px: a finger that moves no further than this between down and up taps, not turns
 const TAP_MS = 500;          // and is lifted within this long; a longer press is a hold, not a tap
@@ -107,51 +108,73 @@ function ease(t) {
   return t * t * t * (t * (6 * t - 15) + 10);
 }
 
-function ldrawText(pic) {
+function ldrawText(pic, colours) {
   const lines = pic.parts.map(([file, colour, m]) => `1 ${colour} ${m.join(' ')} ${file}`);
-  return `0 Picture\n${data.colours}${lines.join('\n')}\n`;
+  return `0 Picture\n${colours}${lines.join('\n')}\n`;
 }
 
 function picture(i) {
-  if (!built.has(i)) {
-    const pic = data.steps[i];
-    built.set(i, new Promise((resolve, reject) => loader.parse(ldrawText(pic), group => {
-      if (group.children.length !== pic.parts.length) {
-        reject(new Error(`picture ${i + 1}: ${group.children.length} of ${pic.parts.length} pieces loaded`));
-        return;
-      }
-      group.userData.waits = pic.waits ?? {};   // the cover (?esittely) has neither: nothing of it moves
-      const tyres = new Set(data.look.tyres);
-      group.children.forEach((child, n) => asGloss(child, n, tyres.has(pic.parts[n][0].toLowerCase())));
-      group.children.forEach((child, n) => {
-        const [, , , unit, lift] = pic.parts[n];
-        child.userData.unit = unit;
-        child.userData.index = n;
-        child.userData.drawn = child.position.clone();
-        child.userData.rest = lift ? child.position.clone().sub(new THREE.Vector3(...lift)) : child.position.clone();
-        // where it starts from: its way (NUMBER.json's, tools/insertion.py) back from its place, along which it
-        // slides on through no piece; a piece drawn apart, from where it is drawn. None for an older piece
-        const way = pic.ways?.[unit];
-        child.userData.start = way ? child.userData.rest.clone().addScaledVector(new THREE.Vector3(...way), way[3]) : null;
-      });
-      pose(group, 'built');
-      // each piece's middle from its origin, in the group's frame: a piece only slides, so it stays
-      for (const child of group.children) child.userData.centre = (middle([child]) ?? child.position.clone()).sub(child.position);
-      group.userData.middle = middle(group.children);
-      group.userData.older = middle(group.children.filter(child => child.userData.unit < 0)) ?? group.userData.middle;
-      pose(group, 'drawn');   // where the grown copies' places (outlined) are given from
-      prepare(group, pic.outlined);
-      // the picture's rotation (NUMBER.json's): its sub-model turned over as drawn, its pieces in the sub-model's places
-      const turn = new THREE.Group();
-      const r = pic.rotation;
-      turn.quaternion.setFromRotationMatrix(new THREE.Matrix4().set(r[0], r[1], r[2], 0, r[3], r[4], r[5], 0, r[6], r[7], r[8], 0, 0, 0, 0, 1));
-      turn.updateMatrix();
-      turn.add(group);
-      mark(`built ${i + 1}`);
-      resolve(group);
-    }, reject)));
-  }
+  if (!built.has(i)) built.set(i, build(i));
   return built.get(i);
+}
+
+// Gives the page's thread back to the reader's taps for a moment once a slice of building has taken BREATH_MS: the
+// index page's model (?esittely) builds the whole model on the index page's thread, and a tap on its links waited
+// for all of it
+let breathed = performance.now();
+async function breathe() {
+  if (performance.now() - breathed < BREATH_MS) return;
+  await (globalThis.scheduler?.yield?.() ?? new Promise(r => setTimeout(r, 0)));
+  breathed = performance.now();
+}
+
+async function build(i) {
+  // the set's own, held through the breaths: another set chosen meanwhile replaces data and loader
+  const set = data, using = loader;
+  const pic = set.steps[i];
+  const parts = using.partsCache;
+  // each new part built alone, a breath between: the picture's own parse then takes them from the cache
+  for (const file of new Set(pic.parts.map(([f]) => f.toLowerCase()))) {
+    if (parts.hasCachedModel(file)) continue;
+    await parts.loadModel(file);
+    await breathe();
+  }
+  const group = await new Promise((resolve, reject) => using.parse(ldrawText(pic, set.colours), resolve, reject));
+  if (group.children.length !== pic.parts.length) {
+    throw new Error(`picture ${i + 1}: ${group.children.length} of ${pic.parts.length} pieces loaded`);
+  }
+  group.userData.waits = pic.waits ?? {};   // the cover (?esittely) has neither: nothing of it moves
+  const tyres = new Set(set.look.tyres);
+  for (const [n, child] of group.children.entries()) {
+    asGloss(child, n, tyres.has(pic.parts[n][0].toLowerCase()));
+    await breathe();
+  }
+  group.children.forEach((child, n) => {
+    const [, , , unit, lift] = pic.parts[n];
+    child.userData.unit = unit;
+    child.userData.index = n;
+    child.userData.drawn = child.position.clone();
+    child.userData.rest = lift ? child.position.clone().sub(new THREE.Vector3(...lift)) : child.position.clone();
+    // where it starts from: its way (NUMBER.json's, tools/insertion.py) back from its place, along which it
+    // slides on through no piece; a piece drawn apart, from where it is drawn. None for an older piece
+    const way = pic.ways?.[unit];
+    child.userData.start = way ? child.userData.rest.clone().addScaledVector(new THREE.Vector3(...way), way[3]) : null;
+  });
+  pose(group, 'built');
+  // each piece's middle from its origin, in the group's frame: a piece only slides, so it stays
+  for (const child of group.children) child.userData.centre = (middle([child]) ?? child.position.clone()).sub(child.position);
+  group.userData.middle = middle(group.children);
+  group.userData.older = middle(group.children.filter(child => child.userData.unit < 0)) ?? group.userData.middle;
+  pose(group, 'drawn');   // where the grown copies' places (outlined) are given from
+  prepare(group, pic.outlined);
+  // the picture's rotation (NUMBER.json's): its sub-model turned over as drawn, its pieces in the sub-model's places
+  const turn = new THREE.Group();
+  const r = pic.rotation;
+  turn.quaternion.setFromRotationMatrix(new THREE.Matrix4().set(r[0], r[1], r[2], 0, r[3], r[4], r[5], 0, r[6], r[7], r[8], 0, 0, 0, 0, 1));
+  turn.updateMatrix();
+  turn.add(group);
+  mark(`built ${i + 1}`);
+  return group;
 }
 
 // A set's NUMBER.json and model file (files: index.html's setFiles()), shown once open (a promise) is true
