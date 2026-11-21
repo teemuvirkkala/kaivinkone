@@ -261,39 +261,52 @@ function faceLook(m, tyre) {
 
 // ---------------------------------------------------------------------------------------------------- rims
 
-const weld = p => p.map(v => Math.round(v / WELD)).join(',');
-const sub = (a, b) => a.map((v, k) => v - b[k]);
-const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-const unit = a => { const l = Math.hypot(...a) || 1; return a.map(v => v / l); };
+// The rims are worked out on the phone for each part a picture first has, the most of a picture's building time
+// (#219): so in scalars, with no array made for a vector, and each corner's weld key worked out once. The sums and
+// products are mesh.rs's, in its order, so the same lines are rims.
+const weld = (x, y, z) => `${Math.round(x / WELD)},${Math.round(y / WELD)},${Math.round(z / WELD)}`;
 
-function onSegment(p, a, b) {
+function onSegment(px, py, pz, a, b) {
   // whether p lies on the segment a-b, within WELD (mesh.rs on_segment())
-  const ab = sub(b, a), len2 = dot(ab, ab);
-  const t = len2 > 0 ? Math.min(1, Math.max(0, dot(sub(p, a), ab) / len2)) : 0;
-  return Math.hypot(...sub(p, a.map((v, k) => v + ab[k] * t))) < WELD;
+  const abx = b[0] - a[0], aby = b[1] - a[1], abz = b[2] - a[2];
+  const len2 = abx * abx + aby * aby + abz * abz;
+  const t = len2 > 0 ? Math.min(1, Math.max(0, ((px - a[0]) * abx + (py - a[1]) * aby + (pz - a[2]) * abz) / len2)) : 0;
+  return Math.hypot(px - (a[0] + abx * t), py - (a[1] + aby * t), pz - (a[2] + abz * t)) < WELD;
 }
 
-function onFace(p, q, n) {
+function side(a, b, px, py, pz, n) {
+  // which side of the line a-b (its length's units) p is, seen along n: (b - a) × (p - a) · n
+  const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
+  const vx = px - a[0], vy = py - a[1], vz = pz - a[2];
+  return (uy * vz - uz * vy) * n[0] + (uz * vx - ux * vz) * n[1] + (ux * vy - uy * vx) * n[2];
+}
+
+function onFace(px, py, pz, q, n) {
   // whether p, in triangle q's plane (unit normal n), lies inside its edges, within WELD (mesh.rs on_face())
-  const side = (a, b) => dot(cross(sub(b, a), sub(p, a)), n) / Math.max(Math.hypot(...sub(b, a)), WELD);
-  const s = [side(q[0], q[1]), side(q[1], q[2]), side(q[2], q[0])];
-  return s.every(v => v >= -WELD) || s.every(v => v <= WELD);
+  const s = (a, b) => side(a, b, px, py, pz, n) / Math.max(Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]), WELD);
+  const s0 = s(q[0], q[1]), s1 = s(q[1], q[2]), s2 = s(q[2], q[0]);
+  return (s0 >= -WELD && s1 >= -WELD && s2 >= -WELD) || (s0 <= WELD && s1 <= WELD && s2 <= WELD);
 }
 
 function triangles(geometry) {
-  // [{q: corners, n: unit normal outward, as the loader's smooth normals say, group: its material index}]
+  // [{q: corners, keys: their weld keys, n: unit normal outward, as the loader's smooth normals say, group: its
+  // material index}]
   const pos = geometry.attributes.position.array, nor = geometry.attributes.normal.array;
   const groups = geometry.groups.length ? geometry.groups : [{ start: 0, count: pos.length / 3, materialIndex: 0 }];
   const out = [];
+  const corner = v => [pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2]];
   for (const { start, count, materialIndex } of groups) {
     const end = Math.min(start + count, pos.length / 3);   // a group's count may run past the vertices (Infinity)
     for (let v = start; v + 2 < end; v += 3) {
-      const q = [0, 1, 2].map(k => Array.from(pos.subarray((v + k) * 3, (v + k) * 3 + 3)));
-      let n = unit(cross(sub(q[1], q[0]), sub(q[2], q[0])));
+      const q = [corner(v), corner(v + 1), corner(v + 2)];
+      const ux = q[1][0] - q[0][0], uy = q[1][1] - q[0][1], uz = q[1][2] - q[0][2];
+      const vx = q[2][0] - q[0][0], vy = q[2][1] - q[0][1], vz = q[2][2] - q[0][2];
+      const cx = uy * vz - uz * vy, cy = uz * vx - ux * vz, cz = ux * vy - uy * vx;
+      const l = Math.hypot(cx, cy, cz) || 1;
+      let n = [cx / l, cy / l, cz / l];
       const sum = [0, 1, 2].map(k => nor[v * 3 + k] + nor[(v + 1) * 3 + k] + nor[(v + 2) * 3 + k]);
-      if (dot(n, sum) < 0) n = n.map(x => -x);
-      out.push({ q, n, group: materialIndex });
+      if (n[0] * sum[0] + n[1] * sum[1] + n[2] * sum[2] < 0) n = n.map(x => -x);
+      out.push({ q, keys: q.map(p => weld(...p)), n, group: materialIndex });
     }
   }
   return out;
@@ -302,11 +315,12 @@ function triangles(geometry) {
 function standsOnAFace(cells, tris, a, b, beside) {
   // whether the line a-b lies across a face's surface, not along its edge: a stud's foot on a brick's top, written as
   // one face under it, is an inside corner, though only the stud's side is found beside it (mesh.rs stands_on_a_face())
-  const middle = a.map((v, k) => (v + b[k]) / 2);
-  return (cells.get(middle.map(v => Math.floor(v / CELL)).join(',')) ?? []).some(t => {
+  const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2, mz = (a[2] + b[2]) / 2;
+  const inPlane = (p, q, n) => Math.abs((p[0] - q[0][0]) * n[0] + (p[1] - q[0][1]) * n[1] + (p[2] - q[0][2]) * n[2]) <= WELD;
+  return (cells.get(`${Math.floor(mx / CELL)},${Math.floor(my / CELL)},${Math.floor(mz / CELL)}`) ?? []).some(t => {
     const { q, n } = tris[t];
-    const inPlane = p => Math.abs(dot(sub(p, q[0]), n)) <= WELD;
-    return Math.abs(dot(n, beside)) < SAME_FACE && inPlane(a) && inPlane(b) && onFace(middle, q, n);
+    return Math.abs(n[0] * beside[0] + n[1] * beside[1] + n[2] * beside[2]) < SAME_FACE && inPlane(a, q, n)
+      && inPlane(b, q, n) && onFace(mx, my, mz, q, n);
   });
 }
 
@@ -314,8 +328,8 @@ function grid(tris) {
   // the triangles by the CELL-wide cells their boxes cover
   const cells = new Map();
   tris.forEach(({ q }, t) => {
-    const c = q.map(p => p.map(v => Math.floor(v / CELL)));
-    const lo = [0, 1, 2].map(k => Math.min(...c.map(p => p[k]))), hi = [0, 1, 2].map(k => Math.max(...c.map(p => p[k])));
+    const lo = [0, 1, 2].map(k => Math.floor(Math.min(q[0][k], q[1][k], q[2][k]) / CELL));
+    const hi = [0, 1, 2].map(k => Math.floor(Math.max(q[0][k], q[1][k], q[2][k]) / CELL));
     for (let x = lo[0]; x <= hi[0]; x++) for (let y = lo[1]; y <= hi[1]; y++) for (let z = lo[2]; z <= hi[2]; z++) {
       const key = `${x},${y},${z}`;
       if (!cells.has(key)) cells.set(key, []);
@@ -323,6 +337,34 @@ function grid(tris) {
     }
   });
   return cells;
+}
+
+function besideLines(tris, lines) {
+  // for each line, the faces along it, one a direction ({n, off: the face's corner off the line, group}), and whether
+  // a face lies on both sides of it
+  const byEnd = new Map();
+  lines.forEach((l, k) => l.forEach(p => {
+    const key = weld(...p);
+    if (!byEnd.has(key)) byEnd.set(key, []);
+    byEnd.get(key).push(k);
+  }));
+  const beside = lines.map(() => []), across = lines.map(() => false);
+  const none = [];
+  for (const tri of tris) {
+    const { q, keys, n } = tri;
+    for (let e = 0; e < 3; e++) {
+      const [a, b, off] = [q[e], q[(e + 1) % 3], q[(e + 2) % 3]];
+      const near = new Set([...(byEnd.get(keys[e]) ?? none), ...(byEnd.get(keys[(e + 1) % 3]) ?? none)]);
+      for (const k of near) {
+        const [la, lb] = lines[k];
+        if (!(onSegment(a[0], a[1], a[2], la, lb) && onSegment(b[0], b[1], b[2], la, lb))) continue;
+        const same = beside[k].find(f => Math.abs(f.n[0] * n[0] + f.n[1] * n[1] + f.n[2] * n[2]) > SAME_FACE);
+        if (same) across[k] ||= side(la, lb, ...same.off, n) > 0 !== side(la, lb, ...off, n) > 0;
+        else beside[k].push({ n, off, group: tri.group });
+      }
+    }
+  }
+  return { beside, across };
 }
 
 // A part's rims (mesh.rs rims()): each edge line with the faces along it, a face whose edge lies along it, one a
@@ -333,28 +375,8 @@ export function rimsOf(faceGeometry, lineGeometry) {
   const pos = lineGeometry.attributes.position.array;
   const lines = [];
   for (let v = 0; v + 1 < pos.length / 3; v += 2) lines.push([Array.from(pos.subarray(v * 3, v * 3 + 3)), Array.from(pos.subarray(v * 3 + 3, v * 3 + 6))]);
-  const byEnd = new Map();
-  lines.forEach((l, k) => l.forEach(p => {
-    const key = weld(p);
-    if (!byEnd.has(key)) byEnd.set(key, []);
-    byEnd.get(key).push(k);
-  }));
-  const beside = lines.map(() => []), across = lines.map(() => false);
-  for (const tri of tris) {
-    const { q, n } = tri;
-    for (let e = 0; e < 3; e++) {
-      const [a, b, off] = [q[e], q[(e + 1) % 3], q[(e + 2) % 3]];
-      const near = new Set([...(byEnd.get(weld(a)) ?? []), ...(byEnd.get(weld(b)) ?? [])]);
-      for (const k of near) {
-        const [la, lb] = lines[k];
-        if (!(onSegment(a, la, lb) && onSegment(b, la, lb))) continue;
-        const side = p => dot(cross(sub(lb, la), sub(p, la)), n) > 0;
-        const same = beside[k].find(f => Math.abs(dot(f.n, n)) > SAME_FACE);
-        if (same) across[k] ||= side(same.off) !== side(off);
-        else beside[k].push({ n, off, group: tri.group });
-      }
-    }
-  }
+  const { beside, across } = besideLines(tris, lines);
+  const dot = (u, v) => u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
   let cells = null;
   const out = {};
   lines.forEach(([a, b], k) => {
@@ -366,7 +388,7 @@ export function rimsOf(faceGeometry, lineGeometry) {
       if (!standsOnAFace(cells, tris, a, b, by[0].n)) rim = { n: [by[0].n, by[0].n], group: by[0].group };
     } else {
       const [f0, f1] = by;
-      const outsideOf = (n, off) => dot(sub(off, a), n) > 0;
+      const outsideOf = (n, off) => (off[0] - a[0]) * n[0] + (off[1] - a[1]) * n[1] + (off[2] - a[2]) * n[2] > 0;
       const smooth = dot(f0.n, f1.n) > SMOOTH_COS;
       const inside = outsideOf(f0.n, f1.off) && outsideOf(f1.n, f0.off);
       if (!smooth && !inside) rim = { n: [f0.n, f1.n], group: f0.group };
